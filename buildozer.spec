@@ -11,6 +11,11 @@ fullscreen = 0
 android.archs = arm64-v8a, armeabi-v7a
 android.allow_backup = True
 
+# Use our patched python-for-android (fixes a pip self-upgrade bug in
+# p4a's own build.py — see build.yml "Clone and patch python-for-android"
+# step, which creates this directory fresh on every run).
+p4a.source_dir = ./p4a-patched
+
 [buildozer]
 log_level = 2
 warn_on_root = 1
