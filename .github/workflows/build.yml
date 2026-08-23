@@ -3,6 +3,11 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      clear_cache:
+        description: 'Clear buildozer cache (use once after changing python version)'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -10,6 +15,25 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      # Buildozer downloads its OWN Android SDK/NDK into .buildozer,
+      # completely separate from the SDK preinstalled on the runner image.
+      # That preinstalled copy (plus .NET, Haskell, Swift toolchains we
+      # don't use) just eats disk space we need for the build. Removing
+      # them frees several GB before Buildozer starts downloading its own.
+      - name: Free up disk space
+        run: |
+          echo "Before cleanup:"
+          df -h /
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /usr/share/swift
+          echo "After cleanup:"
+          df -h /
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -70,6 +94,13 @@ jobs:
       # instead of having to download the full raw GitHub Actions log archive.
       # If this step fails, execution continues to the diagnostic steps below
       # (rather than stopping the job immediately) so we can extract the error.
+      - name: Check disk space before build
+        run: df -h /
+
+      - name: Clear buildozer cache if requested
+        if: ${{ github.event.inputs.clear_cache == 'true' }}
+        run: rm -rf ~/.buildozer .buildozer
+
       - name: Build APK with Buildozer
         run: |
           set -o pipefail
