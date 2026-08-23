@@ -68,10 +68,22 @@ jobs:
               gettext && break || { echo "apt install failed, retry $i..."; sleep 10; }
           done
 
-      - name: Install Buildozer & Dependencies
+      # ROOT CAUSE FIX: python-for-android's own build.py runs
+      # "pip install -U pip" to upgrade pip inside its internal build venv.
+      # This is a documented pip fragility: pip cannot safely replace its
+      # own files while its own process is running them, and it corrupts
+      # itself mid-upgrade — which is the exact ImportError we've been
+      # chasing (happens identically regardless of Python version).
+      # The safe form is "python -m pip install -U pip" instead.
+      # We clone p4a ourselves, patch that one line, and point Buildozer
+      # at our patched copy instead of letting it download its own.
+      - name: Clone and patch python-for-android
         run: |
-          python3 -m pip install --upgrade pip
-          pip install Cython==0.29.36 buildozer virtualenv
+          rm -rf p4a-patched
+          git clone --depth 1 https://github.com/kivy/python-for-android.git p4a-patched
+          sed -i 's/pip install -U pip/python -m pip install -U pip/' p4a-patched/pythonforandroid/build.py
+          echo "Patched line(s):"
+          grep -n "pip install -U pip" p4a-patched/pythonforandroid/build.py || true
 
       # Caches the Android SDK/NDK and buildozer's downloaded/compiled
       # toolchain (~/.buildozer and .buildozer) so subsequent runs don't
