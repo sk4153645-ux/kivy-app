@@ -1,171 +1,75 @@
 name: Build APK
+
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
-    inputs:
-      clear_cache:
-        description: 'Clear buildozer cache (use once after changing python version)'
-        type: boolean
-        default: false
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Buildozer downloads its OWN Android SDK/NDK into .buildozer,
-      # completely separate from the SDK preinstalled on the runner image.
-      # That preinstalled copy (plus .NET, Haskell, Swift toolchains we
-      # don't use) just eats disk space we need for the build. Removing
-      # them frees several GB before Buildozer starts downloading its own.
-      - name: Free up disk space
+      - name: Free Disk Space
         run: |
-          echo "Before cleanup:"
-          df -h /
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
           sudo rm -rf /usr/local/.ghcup
           sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /usr/local/share/powershell
-          sudo rm -rf /usr/share/swift
-          echo "After cleanup:"
           df -h /
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      # Fixes the root cause of the previous failure:
-      # python-for-android was creating its internal build venv with
-      # Python 3.14 (picked up from the runner image) instead of 3.10,
-      # which broke pip's self-upgrade step inside that venv.
-      - name: Pin system python3 to 3.10
-        run: |
-          sudo update-alternatives --install /usr/bin/python3 python3 $(which python3.10) 1
-          sudo update-alternatives --set python3 $(which python3.10)
-          python3 --version
+          distribution: temurin
+          java-version: "17"
 
       - name: Install System Dependencies
         run: |
-          for i in 1 2 3; do
-            sudo apt-get update && break || { echo "apt update failed, retry $i..."; sleep 10; }
-          done
-          for i in 1 2 3; do
-            sudo apt-get install -y git zip unzip autoconf libtool pkg-config \
-              zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev \
-              build-essential libsqlite3-dev libbz2-dev liblzma-dev \
-              gettext && break || { echo "apt install failed, retry $i..."; sleep 10; }
-          done
+          sudo apt-get update
+          sudo apt-get install -y \
+            git zip unzip autoconf libtool pkg-config \
+            zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev \
+            build-essential libsqlite3-dev libbz2-dev liblzma-dev \
+            gettext
 
-      - name: Install Buildozer & Dependencies
+      - name: Install Buildozer
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install Cython==0.29.36 buildozer virtualenv
-          echo "buildozer installed via python3 -m pip:"
-          python3 -m pip show buildozer
+          python -m pip install --upgrade pip
+          python -m pip install buildozer Cython==0.29.36 virtualenv
+          buildozer --version
 
-      # ROOT CAUSE FIX: python-for-android's own build.py runs
-      # "pip install -U pip" to upgrade pip inside its internal build venv.
-      # This is a documented pip fragility: pip cannot safely replace its
-      # own files while its own process is running them, and it corrupts
-      # itself mid-upgrade — which is the exact ImportError we've been
-      # chasing (happens identically regardless of Python version).
-      # The safe form is "python -m pip install -U pip" instead.
-      # We clone p4a ourselves, patch that one line, and point Buildozer
-      # at our patched copy instead of letting it download its own.
-      - name: Clone and patch python-for-android
+      - name: Clear old Buildozer cache
         run: |
-          rm -rf p4a-patched
-          git clone --depth 1 https://github.com/kivy/python-for-android.git p4a-patched
-          sed -i 's/pip install -U pip/python -m pip install -U pip/' p4a-patched/pythonforandroid/build.py
-          echo "Patched line(s):"
-          grep -n "pip install -U pip" p4a-patched/pythonforandroid/build.py || true
+          rm -rf ~/.buildozer
+          rm -rf .buildozer
+          rm -rf bin
 
-      # Caches the Android SDK/NDK and buildozer's downloaded/compiled
-      # toolchain (~/.buildozer and .buildozer) so subsequent runs don't
-      # start from zero. Important: actions/cache saves the cache in a
-      # "post" step that runs even if the build step later fails — so if
-      # this run fails partway through, whatever was already downloaded
-      # or compiled is still saved, and the NEXT run resumes from there
-      # instead of repeating completed work.
-      - name: Cache buildozer global directory
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.buildozer
-            .buildozer
-          key: buildozer-${{ hashFiles('buildozer.spec') }}
-          restore-keys: |
-            buildozer-
-
-      # Piping through tee gives us a clean, single log file to inspect,
-      # instead of having to download the full raw GitHub Actions log archive.
-      # If this step fails, execution continues to the diagnostic steps below
-      # (rather than stopping the job immediately) so we can extract the error.
-      - name: Check disk space before build
-        run: df -h /
-
-      - name: Clear buildozer cache if requested
-        if: ${{ github.event.inputs.clear_cache == 'true' }}
-        run: rm -rf ~/.buildozer .buildozer
-
-      - name: Build APK with Buildozer
+      - name: Build APK
         run: |
           set -o pipefail
-          echo "buildozer location check:"
-          python3 -m pip show buildozer || true
-          which buildozer || echo "buildozer not on PATH, using python3 -m instead"
-          (yes || true) | python3 -m buildozer -v android debug 2>&1 | tee buildozer_build.log
+          yes | buildozer -v android debug 2>&1 | tee buildozer_build.log
 
-      # Runs only if the build step above failed.
-      # Searches the log for buildozer's own "Command failed" marker plus
-      # the surrounding lines (the actual traceback/compiler error usually
-      # sits just above it), and prints it straight into the job summary
-      # so you see the real cause without downloading anything.
-      - name: Extract failure reason
-        if: failure()
-        run: |
-          echo "## Build failure summary" >> "$GITHUB_STEP_SUMMARY"
-          if [ ! -f buildozer_build.log ]; then
-            echo "buildozer_build.log was never created — the build failed in an EARLIER step (before Buildozer ran)." >> "$GITHUB_STEP_SUMMARY"
-            echo "Check the logs of the step marked with a red X above for the real error." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          if grep -n "# Command failed" buildozer_build.log > /dev/null; then
-            LINE=$(grep -n "# Command failed" buildozer_build.log | tail -1 | cut -d: -f1)
-            START=$((LINE > 150 ? LINE - 150 : 1))
-            sed -n "${START},${LINE}p" buildozer_build.log >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No '# Command failed' marker found — showing last 150 lines instead:" >> "$GITHUB_STEP_SUMMARY"
-            tail -n 150 buildozer_build.log >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dairy-hisaab-apk
+          path: bin/*.apk
 
-      # Always upload the log (success or failure) as a small dedicated
-      # artifact, so you can grab it in one click from the run's Summary
-      # page instead of the raw-log archive.
-      - name: Upload build log
+      - name: Upload Build Log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: buildozer-log
+          name: build-log
           path: buildozer_build.log
           if-no-files-found: ignore
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release
-          path: bin/*.apk
