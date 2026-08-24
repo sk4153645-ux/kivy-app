@@ -126,7 +126,7 @@ jobs:
           echo "buildozer location check:"
           python3 -m pip show buildozer || true
           which buildozer || echo "buildozer not on PATH, using python3 -m instead"
-          yes | python3 -m buildozer -v android debug 2>&1 | tee buildozer_build.log
+          (yes || true) | python3 -m buildozer -v android debug 2>&1 | tee buildozer_build.log
 
       # Runs only if the build step above failed.
       # Searches the log for buildozer's own "Command failed" marker plus
