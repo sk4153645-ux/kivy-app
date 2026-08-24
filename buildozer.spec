@@ -13,8 +13,6 @@ fullscreen = 0
 android.archs = arm64-v8a
 android.allow_backup = True
 
-p4a.source_dir = ./p4a-patched
-
 [buildozer]
 log_level = 2
 warn_on_root = 1
