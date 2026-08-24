@@ -4,6 +4,11 @@ on:
   push:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      clear_cache:
+        description: "Clear Buildozer cache"
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -20,18 +25,26 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo rm -rf /usr/local/.ghcup
           sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /usr/share/swift
           df -h /
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+
+      - name: Pin system Python
+        run: |
+          sudo update-alternatives --install /usr/bin/python3 python3 $(which python3.10) 1
+          sudo update-alternatives --set python3 $(which python3.10)
+          python3 --version
 
       - name: Install System Dependencies
         run: |
@@ -44,11 +57,22 @@ jobs:
 
       - name: Install Buildozer
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install buildozer Cython==0.29.36 virtualenv
-          buildozer --version
+          python3 -m pip install --upgrade pip
+          python3 -m pip install buildozer Cython==0.29.36 virtualenv
+          python3 -m pip show buildozer
 
-      - name: Clear old Buildozer cache
+      - name: Clone patched python-for-android
+        run: |
+          rm -rf p4a-patched
+          git clone --depth 1 https://github.com/kivy/python-for-android.git p4a-patched
+
+      - name: Verify ReportLab wheel
+        run: |
+          echo "Checking uploaded ReportLab wheel..."
+          ls -lh reportlab-5.0.0-py3-none-any.whl
+
+      - name: Clear Buildozer cache if requested
+        if: ${{ github.event.inputs.clear_cache == 'true' }}
         run: |
           rm -rf ~/.buildozer
           rm -rf .buildozer
@@ -57,7 +81,7 @@ jobs:
       - name: Build APK
         run: |
           set -o pipefail
-          yes | buildozer -v android debug 2>&1 | tee buildozer_build.log
+          yes | python3 -m buildozer -v android debug 2>&1 | tee buildozer_build.log
 
       - name: Upload APK
         if: success()
