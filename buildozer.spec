@@ -8,16 +8,16 @@ source.include_exts = py,png,jpg,jpeg,kv,atlas,xlsx,whl,ttf,json
 
 version = 1.0
 
-# Scanner ke liye requests aur zaroori network modules add kar diye hain
-requirements = python3,kivy,requests,urllib3,charset_normalizer,idna,certifi,openpyxl,androidstorage4kivy
+# Poore features (Excel + Storage + Network/AI)
+requirements = python3,kivy,requests,openpyxl,androidstorage4kivy
 
-# Internet aur Camera/Storage permissions zaroori hain
+# Permissions
 android.permissions = INTERNET,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,CAMERA
 
 orientation = portrait
 fullscreen = 0
 
-android.archs = arm64-v8a,armeabi-v7a
+android.archs = arm64-v8a
 android.allow_backup = True
 
 [buildozer]
