@@ -19,20 +19,20 @@ from kivy.uix.spinner import Spinner
 from kivy.uix.popup import Popup
 from kivy.uix.filechooser import FileChooserIconView
 
-# AI Scanner Integration
+# Safe AI Scanner Import
 try:
     from dairy_ai_scanner import scan_dairy_register, export_to_excel, export_to_pdf
     AI_SCANNER_AVAILABLE = True
-except ImportError:
+except Exception:
     AI_SCANNER_AVAILABLE = False
 
 APP_NAME = "Nilgiri Dairy App"
 
-# Export Libraries
+# Safe Storage / Export Imports
 try:
     from openpyxl import Workbook
     XLSX_AVAILABLE = True
-except ImportError:
+except Exception:
     XLSX_AVAILABLE = False
 
 try:
@@ -42,27 +42,27 @@ try:
     from reportlab.lib.units import mm
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     PDF_AVAILABLE = True
-except ImportError:
+except Exception:
     PDF_AVAILABLE = False
 
 try:
     from androidstorage4kivy import SharedStorage, ShareSheet
     ANDROID_STORAGE_AVAILABLE = True
-except ImportError:
+except Exception:
     ANDROID_STORAGE_AVAILABLE = False
-
-# Window Background Color (Soft Mint Green)
-Window.clearcolor = (0.94, 0.97, 0.95, 1.0)
 
 
 # ============================================================
-# DATABASE SETUP
+# DATABASE SETUP (Crash-Safe)
 # ============================================================
 
 def get_db_path():
-    app = App.get_running_app()
-    if app:
-        return os.path.join(app.user_data_dir, "dairy.db")
+    try:
+        app = App.get_running_app()
+        if app and hasattr(app, 'user_data_dir'):
+            return os.path.join(app.user_data_dir, "dairy.db")
+    except Exception:
+        pass
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "dairy.db")
 
 
@@ -73,7 +73,10 @@ def get_db():
 
 
 def init_db():
-    os.makedirs(os.path.dirname(get_db_path()), exist_ok=True)
+    try:
+        os.makedirs(os.path.dirname(get_db_path()), exist_ok=True)
+    except Exception:
+        pass
     conn = get_db()
     cur = conn.cursor()
 
@@ -124,7 +127,7 @@ def init_db():
 # ============================================================
 
 def make_button(text, height=50, font=16, bg_color=(0.12, 0.45, 0.25, 1.0)):
-    btn = Button(
+    return Button(
         text=text,
         font_size=dp(font),
         size_hint_y=None,
@@ -134,7 +137,6 @@ def make_button(text, height=50, font=16, bg_color=(0.12, 0.45, 0.25, 1.0)):
         color=(1, 1, 1, 1),
         bold=True
     )
-    return btn
 
 
 def make_card_button(text, height=70, font=14):
@@ -300,8 +302,8 @@ def share_or_open_file(path, share=False):
                 else:
                     ShareSheet().view_file(shared)
                 return True
-        except Exception as exc:
-            print("Android Storage Error:", exc)
+        except Exception:
+            pass
     try:
         import webbrowser
         webbrowser.open("file://" + path)
@@ -311,7 +313,7 @@ def share_or_open_file(path, share=False):
 
 
 # ============================================================
-# 1. HOME SCREEN (Nilgiri Dairy Dashboard)
+# SCREENS
 # ============================================================
 
 class HomeScreen(Screen):
@@ -319,27 +321,23 @@ class HomeScreen(Screen):
         super().__init__(**kwargs)
         layout = BoxLayout(orientation="vertical", spacing=dp(10))
 
-        # Top Header (Deep Green)
         header = BoxLayout(size_hint_y=None, height=dp(60), padding=[dp(16), dp(8)])
         header.canvas.before.clear()
         with header.canvas.before:
             from kivy.graphics import Color, Rectangle
-            Color(0.12, 0.37, 0.23, 1)  # Deep Nilgiri Green
+            Color(0.12, 0.37, 0.23, 1)
             self.rect = Rectangle(size=header.size, pos=header.pos)
             header.bind(size=lambda *_: setattr(self.rect, 'size', header.size),
                         pos=lambda *_: setattr(self.rect, 'pos', header.pos))
 
-        header.add_widget(Label(text="Nilgiri Dairy App", font_size=dp(22), bold=True, color=(1, 1, 1, 1), halign="left"))
+        header.add_widget(Label(text="Nilgiri Dairy App", font_size=dp(22), bold=True, color=(1, 1, 1, 1)))
         layout.add_widget(header)
 
-        # Scrollable Body
         scroll = ScrollView(padding=[dp(12), dp(8)])
         body = BoxLayout(orientation="vertical", spacing=dp(14), size_hint_y=None, padding=[dp(12), dp(8)])
         body.bind(minimum_height=body.setter("height"))
 
-        # Main 4 Action Grid
         grid_main = GridLayout(cols=2, spacing=dp(10), size_hint_y=None, height=dp(210))
-
         btn_milk_entry = make_button("🥛  Milk Entry\n(Daily Hisaab)", 95, 16, bg_color=(0.18, 0.55, 0.34, 1))
         btn_today_milk = make_button("📅  Today's Milk\n(Aaj Ka Doodh)", 95, 16, bg_color=(0.20, 0.50, 0.40, 1))
         btn_customers = make_button("👥  Customers\n(Grahak List)", 95, 16, bg_color=(0.22, 0.45, 0.55, 1))
@@ -356,18 +354,12 @@ class HomeScreen(Screen):
         grid_main.add_widget(btn_ai_scan)
         body.add_widget(grid_main)
 
-        # Registers Section
         body.add_widget(Label(text="REGISTERS & BILLING", font_size=dp(14), bold=True, color=(0.2, 0.4, 0.2, 1), size_hint_y=None, height=dp(25)))
 
-        grid_reports = GridLayout(cols=2, spacing=dp(10), size_hint_y=None, height=dp(130))
+        grid_reports = GridLayout(cols=2, spacing=dp(10), size_hint_y=None, height=dp(70))
         btn_reports = make_button("📊 Full Reports\n& Khata", 60, 14, bg_color=(0.35, 0.45, 0.40, 1))
         btn_reports.bind(on_press=lambda _: setattr(self.manager, "current", "reports"))
-
-        btn_all_entry = make_button("🔍 View All\nEntries", 60, 14, bg_color=(0.35, 0.45, 0.40, 1))
-        btn_all_entry.bind(on_press=lambda _: setattr(self.manager, "current", "today"))
-
         grid_reports.add_widget(btn_reports)
-        grid_reports.add_widget(btn_all_entry)
         body.add_widget(grid_reports)
 
         scroll.add_widget(body)
@@ -403,10 +395,6 @@ class HomeScreen(Screen):
         popup.open()
 
 
-# ============================================================
-# 2. DAILY MILK ENTRY SCREEN (Morning / Evening List & Update)
-# ============================================================
-
 class DailyEntryScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -415,7 +403,6 @@ class DailyEntryScreen(Screen):
 
         layout = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(8))
 
-        # Top Bar
         top = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(4))
         back = make_button("< Back", 44, 14, bg_color=(0.3, 0.4, 0.3, 1))
         back.size_hint_x = None
@@ -427,7 +414,6 @@ class DailyEntryScreen(Screen):
         top.add_widget(self.title_lbl)
         layout.add_widget(top)
 
-        # Search Bar (Name or Serial Code)
         self.search_input = TextInput(
             hint_text="🔍 Search Name or Code (e.g. 01, Ramesh)...",
             multiline=False,
@@ -439,14 +425,12 @@ class DailyEntryScreen(Screen):
         self.search_input.bind(text=lambda *_: self.load_customer_entries())
         layout.add_widget(self.search_input)
 
-        # Customer List Scroll
         scroll = ScrollView()
         self.list_layout = GridLayout(cols=1, spacing=dp(6), size_hint_y=None)
         self.list_layout.bind(minimum_height=self.list_layout.setter("height"))
         scroll.add_widget(self.list_layout)
         layout.add_widget(scroll)
 
-        # Bottom Live Summary Bar
         self.summary_bar = Label(
             text="Total: 0.00 L | Rs. 0.00",
             font_size=dp(15),
@@ -505,7 +489,7 @@ class DailyEntryScreen(Screen):
                 total_amount += amt
                 card_text = f"  [{code_str}]  {name}  (Rate: Rs.{r:.2f})\n  ✓ Status: {l:.2f} L  |  Amount: Rs.{amt:.2f}"
                 btn = make_card_button(card_text, height=68, font=13)
-                btn.background_color = (0.85, 0.95, 0.85, 1)  # Light Green for Done
+                btn.background_color = (0.85, 0.95, 0.85, 1)
             else:
                 rate_disp = f"Rs.{def_rate:.2f}" if def_rate else "Manual"
                 card_text = f"  [{code_str}]  {name}  (Rate: {rate_disp})\n  [ Tap to enter milk litres... ]"
@@ -573,16 +557,11 @@ class DailyEntryScreen(Screen):
         popup.open()
 
 
-# ============================================================
-# 3. CUSTOMERS MANAGEMENT SCREEN (Add on Top & Roll No Wise)
-# ============================================================
-
 class CustomersScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
 
-        # Top Bar with Add Button
         top = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(6))
         back = make_button("< Back", 46, 14, bg_color=(0.3, 0.4, 0.3, 1))
         back.size_hint_x = None
@@ -599,7 +578,6 @@ class CustomersScreen(Screen):
         top.add_widget(add_btn)
         layout.add_widget(top)
 
-        # Search Bar
         self.search_in = TextInput(
             hint_text="🔍 Search customer name, code or mobile...",
             multiline=False,
@@ -611,7 +589,6 @@ class CustomersScreen(Screen):
         self.search_in.bind(text=lambda *_: self.load_customers())
         layout.add_widget(self.search_in)
 
-        # Customer List Scroll
         scroll = ScrollView()
         self.list_layout = GridLayout(cols=1, spacing=dp(6), size_hint_y=None)
         self.list_layout.bind(minimum_height=self.list_layout.setter("height"))
@@ -727,17 +704,12 @@ class CustomersScreen(Screen):
         popup.open()
 
 
-# ============================================================
-# 4. CUSTOMER DETAIL & KHATA SCREEN
-# ============================================================
-
 class CustomerDetailScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.customer_id = None
         layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
 
-        # Top Bar
         top = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(4))
         back = make_button("< Back", 44, 14, bg_color=(0.3, 0.4, 0.3, 1))
         back.size_hint_x = None
@@ -755,11 +727,9 @@ class CustomerDetailScreen(Screen):
         top.add_widget(edit)
         layout.add_widget(top)
 
-        # Summary Banner Card
         self.summary_card = Label(text="", font_size=dp(13), size_hint_y=None, height=dp(72), color=(0.1, 0.2, 0.1, 1))
         layout.add_widget(self.summary_card)
 
-        # Action Buttons
         actions = GridLayout(cols=3, size_hint_y=None, height=dp(52), spacing=dp(6))
         m = make_button("+ Morning", 50, 13, bg_color=(0.90, 0.55, 0.10, 1))
         e = make_button("+ Evening", 50, 13, bg_color=(0.20, 0.35, 0.60, 1))
@@ -772,7 +742,6 @@ class CustomerDetailScreen(Screen):
         actions.add_widget(p)
         layout.add_widget(actions)
 
-        # History Scroll
         layout.add_widget(Label(text="TRANSACTION HISTORY", font_size=dp(13), bold=True, color=(0.2, 0.4, 0.2, 1), size_hint_y=None, height=dp(25)))
         scroll = ScrollView()
         self.history_grid = GridLayout(cols=1, spacing=dp(4), size_hint_y=None)
@@ -925,10 +894,6 @@ class CustomerDetailScreen(Screen):
         popup.open()
 
 
-# ============================================================
-# 5. AI REGISTER SCANNER SCREEN
-# ============================================================
-
 class ScanRegisterScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -936,7 +901,6 @@ class ScanRegisterScreen(Screen):
 
         layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
 
-        # Top Bar
         top = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(4))
         back = make_button("< Back", 44, 14, bg_color=(0.3, 0.4, 0.3, 1))
         back.size_hint_x = None
@@ -946,7 +910,6 @@ class ScanRegisterScreen(Screen):
         top.add_widget(Label(text="AI Register Scanner", font_size=dp(18), bold=True, color=(0.1, 0.3, 0.1, 1)))
         layout.add_widget(top)
 
-        # Buttons Bar
         btns = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
         pick = make_button("Select Image", 46, 14, bg_color=(0.20, 0.50, 0.40, 1))
         pick.bind(on_press=lambda _: self.open_file_chooser())
@@ -956,24 +919,20 @@ class ScanRegisterScreen(Screen):
         btns.add_widget(save_db)
         layout.add_widget(btns)
 
-        # Customer Spinner
         cbox = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
         cbox.add_widget(Label(text="Assign Customer:", size_hint_x=0.4, color=(0.1, 0.2, 0.1, 1)))
         self.cust_spinner = Spinner(text="Select Customer", values=[], size_hint_x=0.6)
         cbox.add_widget(self.cust_spinner)
         layout.add_widget(cbox)
 
-        # Status Label
         self.status_lbl = Label(text="Select dairy hisaab photo to scan", font_size=dp(13), color=(0.2, 0.4, 0.2, 1), size_hint_y=None, height=dp(28))
         layout.add_widget(self.status_lbl)
 
-        # Table Grid Header
         hd = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(2))
         for h in ["Date", "M-Qty", "M-Rate", "E-Qty", "E-Rate"]:
             hd.add_widget(Label(text=f"[b]{h}[/b]", markup=True, color=(0.1, 0.3, 0.1, 1), font_size=dp(12)))
         layout.add_widget(hd)
 
-        # Rows Scroll
         scroll = ScrollView()
         self.table_grid = GridLayout(cols=1, spacing=dp(4), size_hint_y=None)
         self.table_grid.bind(minimum_height=self.table_grid.setter("height"))
@@ -1040,7 +999,7 @@ class ScanRegisterScreen(Screen):
             def field(val, name):
                 ti = TextInput(text=str(val or ""), multiline=False, font_size=dp(12))
                 if name in doubtful:
-                    ti.background_color = (1.0, 0.65, 0.65, 1.0)  # Red alert
+                    ti.background_color = (1.0, 0.65, 0.65, 1.0)
                 return ti
 
             d = field(row.get("date", ""), "date")
@@ -1103,10 +1062,6 @@ class ScanRegisterScreen(Screen):
         show_message("Saved", f"{saved} entries successfully save ho gayi!")
 
 
-# ============================================================
-# 6. TODAY'S MILK SCREEN
-# ============================================================
-
 class TodayMilkScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -1164,10 +1119,6 @@ class TodayMilkScreen(Screen):
         ))
 
 
-# ============================================================
-# 7. REPORTS SCREEN
-# ============================================================
-
 class ReportsScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -1219,11 +1170,17 @@ class ReportsScreen(Screen):
 
 
 # ============================================================
-# MAIN APPLICATION INSTANTIATION
+# MAIN APP CLASS
 # ============================================================
 
 class NilgiriDairyApp(App):
     title = APP_NAME
+
+    def on_start(self):
+        try:
+            Window.clearcolor = (0.94, 0.97, 0.95, 1.0)
+        except Exception:
+            pass
 
     def build(self):
         init_db()
