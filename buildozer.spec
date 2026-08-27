@@ -8,10 +8,9 @@ source.include_exts = py,png,jpg,jpeg,kv,atlas,xlsx,whl,ttf,json
 
 version = 1.0
 
-# Poore features (Excel + Storage + Network/AI)
+# Direct aur stable packages
 requirements = python3,kivy,requests,certifi,openpyxl,androidstorage4kivy
 
-# Permissions
 android.permissions = INTERNET,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,CAMERA
 
 orientation = portrait
