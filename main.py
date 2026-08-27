@@ -18,7 +18,7 @@ from kivy.uix.spinner import Spinner
 from kivy.uix.popup import Popup
 from kivy.uix.filechooser import FileChooserIconView
 
-# Safe Dynamic Imports
+# Safe Imports
 try:
     from dairy_ai_scanner import scan_dairy_register, export_to_excel, export_to_pdf
     AI_SCANNER_AVAILABLE = True
@@ -37,9 +37,9 @@ try:
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    PDF_AVAILABLE = True
+    REPORTLAB_AVAILABLE = True
 except Exception:
-    PDF_AVAILABLE = False
+    REPORTLAB_AVAILABLE = False
 
 try:
     from androidstorage4kivy import SharedStorage, ShareSheet
@@ -51,21 +51,21 @@ APP_NAME = "Nilgiri Dairy App"
 
 
 # ============================================================
-# DATABASE SETUP (Android 100% Crash-Proof)
+# DATABASE SAFE ENGINE
 # ============================================================
 
 def get_db_path():
     try:
         app = App.get_running_app()
-        if app and getattr(app, 'user_data_dir', None):
-            return os.path.join(app.user_data_dir, "dairy.db")
+        if app and getattr(app, "user_data_dir", None):
+            return os.path.join(app.user_data_dir, "dairy_v2.db")
     except Exception:
         pass
-    return "dairy.db"
+    return "dairy_v2.db"
 
 
 def get_db():
-    conn = sqlite3.connect(get_db_path())
+    conn = sqlite3.connect(get_db_path(), timeout=10)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -114,9 +114,6 @@ def init_db():
             )
         """)
 
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_milk_cust_date ON milk_entries(customer_id, entry_date)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_pay_cust_date ON payments(customer_id, payment_date)")
-
         conn.commit()
         conn.close()
     except Exception as e:
@@ -124,7 +121,7 @@ def init_db():
 
 
 # ============================================================
-# HELPERS
+# UI HELPERS
 # ============================================================
 
 def make_button(text, height=50, font=15, bg_color=(0.12, 0.45, 0.25, 1.0)):
@@ -182,7 +179,7 @@ def parse_positive_float(value):
     try:
         n = float(value)
         return n if n > 0 else None
-    except (TypeError, ValueError):
+    except Exception:
         return None
 
 
@@ -409,18 +406,22 @@ class DailyEntryScreen(Screen):
         self.list_layout.clear_widgets()
         search_term = self.search_input.text.strip().lower()
 
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT id, code, name, default_rate FROM customers ORDER BY CAST(code AS INTEGER), id")
-        customers = cur.fetchall()
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT id, code, name, default_rate FROM customers ORDER BY CAST(code AS INTEGER), id")
+            customers = cur.fetchall()
 
-        cur.execute("""
-            SELECT customer_id, litres, rate, amount
-            FROM milk_entries
-            WHERE entry_date=? AND session=?
-        """, (self.current_date, self.session))
-        entries = {r[0]: (r[1], r[2], r[3]) for r in cur.fetchall()}
-        conn.close()
+            cur.execute("""
+                SELECT customer_id, litres, rate, amount
+                FROM milk_entries
+                WHERE entry_date=? AND session=?
+            """, (self.current_date, self.session))
+            entries = {r[0]: (r[1], r[2], r[3]) for r in cur.fetchall()}
+            conn.close()
+        except Exception:
+            customers = []
+            entries = {}
 
         total_litres = 0.0
         total_amount = 0.0
@@ -489,14 +490,17 @@ class DailyEntryScreen(Screen):
                 show_message("Error", "Valid numbers daalein.")
                 return
 
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT OR REPLACE INTO milk_entries (customer_id, entry_date, session, litres, rate, amount)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (cid, self.current_date, self.session, l, r, l * r))
-            conn.commit()
-            conn.close()
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT OR REPLACE INTO milk_entries (customer_id, entry_date, session, litres, rate, amount)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (cid, self.current_date, self.session, l, r, l * r))
+                conn.commit()
+                conn.close()
+            except Exception as exc:
+                print(f"Save error: {exc}")
 
             popup.dismiss()
             self.load_customer_entries()
@@ -542,5 +546,4 @@ class CustomersScreen(Screen):
         self.load_customers()
 
     def load_customers(self):
-        self.list_layout.clear_widgets()
-   
+       
