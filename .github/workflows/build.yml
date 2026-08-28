@@ -33,11 +33,13 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
+          cache: 'gradle'
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Cache Buildozer global directory
         uses: actions/cache@v4
@@ -55,18 +57,81 @@ jobs:
           restore-keys: |
             buildozer-project-
 
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Validate Configuration
+        run: |
+          echo "Checking buildozer.spec..."
+          if [ ! -f buildozer.spec ]; then
+            echo "❌ buildozer.spec not found!"
+            exit 1
+          fi
+          echo "✓ buildozer.spec found"
+          python --version
+          echo "Python dependencies to be installed:"
+          echo "  - buildozer==1.5.0"
+          echo "  - Cython==0.29.36"
+          echo "  - virtualenv"
+
       - name: Install Python Dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           pip install buildozer==1.5.0 Cython==0.29.36 virtualenv
+
+      - name: Verify Buildozer Installation
+        run: |
+          buildozer --version
+          echo "Buildozer installed successfully"
 
       - name: Inject API Key
         run: |
           echo "GEMINI_API_KEY = \"${{ secrets.GEMINI_API_KEY }}\"" > secrets_config.py
+          echo "✓ API key injected"
 
       - name: Build APK
+        id: build
         run: |
+          echo "Starting APK build..."
           buildozer -v android debug
+          echo "build_status=success" >> $GITHUB_OUTPUT
+
+      - name: Check Build Output
+        if: success()
+        run: |
+          echo "Build completed successfully. Checking output..."
+          if [ -d "bin" ]; then
+            echo "Contents of bin directory:"
+            ls -lah bin/
+          else
+            echo "❌ bin directory not found!"
+            exit 1
+          fi
+          
+          if [ -f "bin"/*.apk ]; then
+            echo "✓ APK file(s) found"
+            ls -lh bin/*.apk
+          else
+            echo "❌ No APK files found in bin directory"
+            exit 1
+          fi
+
+      - name: Display Build Log on Failure
+        if: failure()
+        run: |
+          echo "Build failed. Checking logs..."
+          if [ -d ".buildozer/android/platform/build" ]; then
+            find .buildozer/android/platform/build -name "*.log" -type f -exec echo "=== {} ===" \; -exec tail -50 {} \; 2>/dev/null || true
+          fi
+          if [ -d ".buildozer" ]; then
+            echo "=== .buildozer directory structure ==="
+            find .buildozer -type f -name "*.log" 2>/dev/null | head -10 || true
+          fi
 
       - name: Upload APK
         if: success()
@@ -74,3 +139,18 @@ jobs:
         with:
           name: NilgiriDairy-APK
           path: bin/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Create Build Summary
+        if: always()
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow:** ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          if [ -f "bin"/*.apk ]; then
+            echo "**APK:** $(ls -lh bin/*.apk | awk '{print $9, "(" $5 ")"}')" >> $GITHUB_STEP_SUMMARY
+          fi
