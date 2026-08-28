@@ -18,7 +18,7 @@ from kivy.uix.spinner import Spinner
 from kivy.uix.popup import Popup
 from kivy.uix.filechooser import FileChooserIconView
 
-# Safe Imports
+# Safe Dynamic Imports
 try:
     from dairy_ai_scanner import scan_dairy_register, export_to_excel, export_to_pdf
     AI_SCANNER_AVAILABLE = True
@@ -51,7 +51,7 @@ APP_NAME = "Nilgiri Dairy App"
 
 
 # ============================================================
-# DATABASE SAFE ENGINE
+# DATABASE SETUP (Crash-Safe)
 # ============================================================
 
 def get_db_path():
@@ -114,6 +114,9 @@ def init_db():
             )
         """)
 
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_milk_cust_date ON milk_entries(customer_id, entry_date)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_pay_cust_date ON payments(customer_id, payment_date)")
+
         conn.commit()
         conn.close()
     except Exception as e:
@@ -121,7 +124,7 @@ def init_db():
 
 
 # ============================================================
-# UI HELPERS
+# HELPERS
 # ============================================================
 
 def make_button(text, height=50, font=15, bg_color=(0.12, 0.45, 0.25, 1.0)):
@@ -546,4 +549,468 @@ class CustomersScreen(Screen):
         self.load_customers()
 
     def load_customers(self):
-       
+        self.list_layout.clear_widgets()
+        search_term = self.search_in.text.strip().lower()
+
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT id, code, name, phone, default_rate FROM customers ORDER BY CAST(code AS INTEGER), id")
+            rows = cur.fetchall()
+            conn.close()
+        except Exception:
+            rows = []
+
+        if not rows:
+            self.list_layout.add_widget(Label(
+                text="No customers yet. Tap '+ Add' to create one.",
+                font_size=dp(13), size_hint_y=None, height=dp(50)
+            ))
+            return
+
+        for cid, code, name, phone, rate in rows:
+            code_str = str(code) if code else f"{cid:02d}"
+            if search_term and search_term not in name.lower() and search_term not in code_str.lower():
+                continue
+
+            milk, paid, due = get_customer_balance(cid)
+            rate_disp = f"Rs.{rate:.2f}" if rate else "N/A"
+            card_text = f"  [{code_str}]  {name}\n  Phone: {phone or '-'}  |  Rate: {rate_disp}  |  Due: Rs.{due:.2f}"
+            btn = make_card_button(card_text, height=64, font=13)
+            btn.background_color = (1.0, 0.92, 0.85, 1) if due > 0 else (0.9, 0.95, 0.9, 1)
+            btn.bind(on_press=lambda _, c=cid, n=name, cd=code_str, p=phone, r=rate: self.customer_form(c, n, cd, p, r))
+            self.list_layout.add_widget(btn)
+
+    def customer_form(self, cid=None, name="", code="", phone="", rate=None):
+        box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(6))
+        box.add_widget(Label(text="Edit Customer" if cid else "Add Customer", font_size=dp(15), bold=True))
+
+        code_in = make_input("Code (e.g. 01)", code)
+        name_in = make_input("Full Name *", name)
+        phone_in = make_input("Phone", phone)
+        rate_in = make_input("Default Rate (Rs/L)", rate if rate else "", numeric=True)
+
+        box.add_widget(code_in)
+        box.add_widget(name_in)
+        box.add_widget(phone_in)
+        box.add_widget(rate_in)
+
+        btns = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
+        btn_cancel = make_button("CANCEL", 42, 13, bg_color=(0.5, 0.5, 0.5, 1))
+        btn_save = make_button("SAVE", 42, 13, bg_color=(0.18, 0.55, 0.34, 1))
+        btns.add_widget(btn_cancel)
+        btns.add_widget(btn_save)
+        box.add_widget(btns)
+
+        btn_delete = None
+        if cid:
+            btn_delete = make_button("DELETE CUSTOMER", 40, 12, bg_color=(0.75, 0.15, 0.15, 1))
+            box.add_widget(btn_delete)
+
+        popup = Popup(title="Customer", content=box, size_hint=(0.9, 0.68 if cid else 0.58))
+        btn_cancel.bind(on_press=popup.dismiss)
+
+        def save_customer(_):
+            nm = name_in.text.strip()
+            if not nm:
+                show_message("Error", "Name is required.")
+                return
+            cd = code_in.text.strip()
+            ph = phone_in.text.strip()
+            rt = parse_positive_float(rate_in.text)
+
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                if cid:
+                    cur.execute("UPDATE customers SET code=?, name=?, phone=?, default_rate=? WHERE id=?", (cd, nm, ph, rt, cid))
+                else:
+                    cur.execute("INSERT INTO customers (code, name, phone, default_rate) VALUES (?, ?, ?, ?)", (cd, nm, ph, rt))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                show_message("Error", f"Could not save: {e}")
+                return
+            popup.dismiss()
+            self.load_customers()
+
+        btn_save.bind(on_press=save_customer)
+
+        if cid and btn_delete:
+            def delete_customer(_):
+                confirm_box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
+                confirm_box.add_widget(Label(
+                    text=f"Delete {name}?\nThis will remove all their milk & payment records.",
+                    font_size=dp(13)
+                ))
+                cbtns = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
+                cb_no = make_button("NO", 42, 13, bg_color=(0.5, 0.5, 0.5, 1))
+                cb_yes = make_button("YES, DELETE", 42, 13, bg_color=(0.75, 0.15, 0.15, 1))
+                cbtns.add_widget(cb_no)
+                cbtns.add_widget(cb_yes)
+                confirm_box.add_widget(cbtns)
+                confirm_popup = Popup(title="Confirm Delete", content=confirm_box, size_hint=(0.85, 0.4))
+                cb_no.bind(on_press=confirm_popup.dismiss)
+
+                def do_delete(_):
+                    try:
+                        conn = get_db()
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM customers WHERE id=?", (cid,))
+                        conn.commit()
+                        conn.close()
+                    except Exception as exc:
+                        print(f"Delete error: {exc}")
+                    confirm_popup.dismiss()
+                    popup.dismiss()
+                    self.load_customers()
+
+                cb_yes.bind(on_press=do_delete)
+                confirm_popup.open()
+
+            btn_delete.bind(on_press=delete_customer)
+
+        popup.open()
+
+
+class TodayScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
+
+        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
+        back = make_button("< Back", 42, 13, bg_color=(0.3, 0.4, 0.3, 1))
+        back.size_hint_x = None
+        back.width = dp(70)
+        back.bind(on_press=lambda _: setattr(self.manager, "current", "home"))
+        top.add_widget(back)
+        top.add_widget(Label(text=f"Today's Milk ({format_date(date.today().isoformat())})",
+                              font_size=dp(15), bold=True, color=(0.1, 0.3, 0.1, 1)))
+        layout.add_widget(top)
+
+        scroll = ScrollView()
+        self.list_layout = GridLayout(cols=1, spacing=dp(5), size_hint_y=None)
+        self.list_layout.bind(minimum_height=self.list_layout.setter("height"))
+        scroll.add_widget(self.list_layout)
+        layout.add_widget(scroll)
+
+        self.summary_bar = Button(
+            text="Total: 0.00 L | Rs. 0.00",
+            font_size=dp(14), bold=True, size_hint_y=None, height=dp(38),
+            background_normal='', background_color=(0.12, 0.37, 0.23, 1), color=(1, 1, 1, 1)
+        )
+        layout.add_widget(self.summary_bar)
+        self.add_widget(layout)
+
+    def on_pre_enter(self):
+        self.load_today()
+
+    def load_today(self):
+        self.list_layout.clear_widgets()
+        today = date.today().isoformat()
+
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT id, code, name FROM customers ORDER BY CAST(code AS INTEGER), id")
+            customers = cur.fetchall()
+            cur.execute("SELECT customer_id, session, litres, amount FROM milk_entries WHERE entry_date=?", (today,))
+            rows = cur.fetchall()
+            conn.close()
+        except Exception:
+            customers, rows = [], []
+
+        data = {}
+        for cid, session, litres, amount in rows:
+            data.setdefault(cid, {})[session] = (litres, amount)
+
+        total_litres = 0.0
+        total_amount = 0.0
+        any_entries = False
+
+        for cid, code, name in customers:
+            sess = data.get(cid, {})
+            m = sess.get("Morning")
+            e = sess.get("Evening")
+            if not m and not e:
+                continue
+
+            any_entries = True
+            code_str = str(code) if code else f"{cid:02d}"
+            parts = []
+            day_litres = 0.0
+            day_amount = 0.0
+            if m:
+                parts.append(f"AM: {m[0]:.2f}L")
+                day_litres += m[0]
+                day_amount += m[1]
+            if e:
+                parts.append(f"PM: {e[0]:.2f}L")
+                day_litres += e[0]
+                day_amount += e[1]
+
+            total_litres += day_litres
+            total_amount += day_amount
+
+            card_text = f"  [{code_str}]  {name}\n  {'  |  '.join(parts)}  |  Rs.{day_amount:.2f}"
+            btn = make_card_button(card_text, height=58, font=13)
+            btn.background_color = (0.9, 0.95, 0.9, 1)
+            self.list_layout.add_widget(btn)
+
+        if not any_entries:
+            self.list_layout.add_widget(Label(
+                text="No milk entries recorded today yet.",
+                font_size=dp(13), size_hint_y=None, height=dp(50)
+            ))
+
+        self.summary_bar.text = f"Today Total: {total_litres:.2f} L | Rs.{total_amount:.2f}"
+
+
+class ReportsScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.selected_customer = None
+        self.year = date.today().year
+        self.month = date.today().month
+
+        self.layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
+
+        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
+        back = make_button("< Back", 42, 13, bg_color=(0.3, 0.4, 0.3, 1))
+        back.size_hint_x = None
+        back.width = dp(70)
+        back.bind(on_press=lambda _: self.go_back())
+        top.add_widget(back)
+        self.title_lbl = Label(text="Reports & Khata", font_size=dp(16), bold=True, color=(0.1, 0.3, 0.1, 1))
+        top.add_widget(self.title_lbl)
+        self.layout.add_widget(top)
+
+        self.search_in = TextInput(hint_text="🔍 Search Customer...", multiline=False, font_size=dp(15), size_hint_y=None, height=dp(44))
+        self.search_in.bind(text=lambda *_: self.load_customer_list())
+        self.layout.add_widget(self.search_in)
+
+        scroll = ScrollView()
+        self.list_layout = GridLayout(cols=1, spacing=dp(5), size_hint_y=None)
+        self.list_layout.bind(minimum_height=self.list_layout.setter("height"))
+        scroll.add_widget(self.list_layout)
+        self.layout.add_widget(scroll)
+
+        self.add_widget(self.layout)
+
+    def go_back(self):
+        if self.selected_customer:
+            self.selected_customer = None
+            self.on_pre_enter()
+        else:
+            self.manager.current = "home"
+
+    def on_pre_enter(self):
+        self.selected_customer = None
+        self.title_lbl.text = "Reports & Khata"
+        self.search_in.disabled = False
+        self.search_in.text = ""
+        self.load_customer_list()
+
+    def load_customer_list(self):
+        self.list_layout.clear_widgets()
+        search_term = self.search_in.text.strip().lower()
+
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT id, code, name FROM customers ORDER BY CAST(code AS INTEGER), id")
+            customers = cur.fetchall()
+            conn.close()
+        except Exception:
+            customers = []
+
+        if not customers:
+            self.list_layout.add_widget(Label(
+                text="No customers yet.", font_size=dp(13), size_hint_y=None, height=dp(50)
+            ))
+            return
+
+        for cid, code, name in customers:
+            code_str = str(code) if code else f"{cid:02d}"
+            if search_term and search_term not in name.lower() and search_term not in code_str.lower():
+                continue
+            milk, paid, due = get_customer_balance(cid)
+            card_text = f"  [{code_str}]  {name}\n  Total Due: Rs.{due:.2f}"
+            btn = make_card_button(card_text, height=58, font=13)
+            btn.background_color = (1.0, 0.9, 0.85, 1) if due > 0 else (0.9, 0.95, 0.9, 1)
+            btn.bind(on_press=lambda _, c=cid, n=name: self.open_customer_report(c, n))
+            self.list_layout.add_widget(btn)
+
+    def open_customer_report(self, cid, name):
+        self.selected_customer = cid
+        self.title_lbl.text = name
+        self.search_in.disabled = True
+        self.year, self.month = date.today().year, date.today().month
+        self.render_month_report(cid, name)
+
+    def render_month_report(self, cid, name):
+        self.list_layout.clear_widgets()
+
+        nav = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
+        btn_prev = make_button("< Prev", 40, 13, bg_color=(0.3, 0.4, 0.5, 1))
+        month_lbl = Label(text=month_title(self.year, self.month), font_size=dp(14), bold=True)
+        btn_next = make_button("Next >", 40, 13, bg_color=(0.3, 0.4, 0.5, 1))
+        nav.add_widget(btn_prev)
+        nav.add_widget(month_lbl)
+        nav.add_widget(btn_next)
+        self.list_layout.add_widget(nav)
+
+        def go_prev(_):
+            self.year, self.month = previous_month(self.year, self.month)
+            self.render_month_report(cid, name)
+
+        def go_next(_):
+            self.year, self.month = next_month(self.year, self.month)
+            self.render_month_report(cid, name)
+
+        btn_prev.bind(on_press=go_prev)
+        btn_next.bind(on_press=go_next)
+
+        data = get_customer_month_data(cid, self.year, self.month)
+
+        stats = (
+            f"Previous Due: Rs.{data['previous_due']:.2f}\n"
+            f"This Month Milk: {data['current_litres']:.2f} L = Rs.{data['current_amount']:.2f}\n"
+            f"This Month Paid: Rs.{data['current_paid']:.2f}\n"
+            f"TOTAL DUE: Rs.{data['total_due']:.2f}"
+        )
+        stats_lbl = Label(text=stats, font_size=dp(14), size_hint_y=None, height=dp(100),
+                           halign='left', valign='top')
+        stats_lbl.bind(size=lambda w, s: setattr(w, 'text_size', (w.width, None)))
+        self.list_layout.add_widget(stats_lbl)
+
+        btn_payment = make_button("+ Add Payment", 44, 13, bg_color=(0.18, 0.55, 0.34, 1))
+        btn_payment.bind(on_press=lambda _: self.add_payment_popup(cid, name))
+        self.list_layout.add_widget(btn_payment)
+
+        if XLSX_AVAILABLE or REPORTLAB_AVAILABLE or AI_SCANNER_AVAILABLE:
+            btn_export = make_button("Export Report", 44, 13, bg_color=(0.35, 0.45, 0.55, 1))
+            btn_export.bind(on_press=lambda _: self.export_report(cid, name))
+            self.list_layout.add_widget(btn_export)
+
+    def add_payment_popup(self, cid, name):
+        box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(6))
+        box.add_widget(Label(text=f"Add Payment - {name}", font_size=dp(15), bold=True))
+        amt_in = make_input("Amount *", numeric=True)
+        note_in = make_input("Note (optional)")
+        box.add_widget(amt_in)
+        box.add_widget(note_in)
+
+        btns = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
+        btn_cancel = make_button("CANCEL", 42, 13, bg_color=(0.5, 0.5, 0.5, 1))
+        btn_save = make_button("SAVE", 42, 13, bg_color=(0.18, 0.55, 0.34, 1))
+        btns.add_widget(btn_cancel)
+        btns.add_widget(btn_save)
+        box.add_widget(btns)
+
+        popup = Popup(title="Payment", content=box, size_hint=(0.85, 0.45))
+        btn_cancel.bind(on_press=popup.dismiss)
+
+        def save_payment(_):
+            amt = parse_positive_float(amt_in.text)
+            if not amt:
+                show_message("Error", "Valid amount daalein.")
+                return
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("INSERT INTO payments (customer_id, payment_date, amount, note) VALUES (?, ?, ?, ?)",
+                            (cid, date.today().isoformat(), amt, note_in.text.strip()))
+                conn.commit()
+                conn.close()
+            except Exception as exc:
+                show_message("Error", f"Could not save payment: {exc}")
+                return
+            popup.dismiss()
+            self.render_month_report(cid, name)
+
+        btn_save.bind(on_press=save_payment)
+        popup.open()
+
+    def export_report(self, cid, name):
+        # Placeholder: hook up export_to_excel / export_to_pdf here once
+        # dairy_ai_scanner.py (or a local exporter) is added to the project.
+        show_message("Export", "Export feature not wired up yet.\nAdd dairy_ai_scanner.py to enable this.")
+
+
+class ScanRegisterScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
+
+        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
+        back = make_button("< Back", 42, 13, bg_color=(0.3, 0.4, 0.3, 1))
+        back.size_hint_x = None
+        back.width = dp(70)
+        back.bind(on_press=lambda _: setattr(self.manager, "current", "home"))
+        top.add_widget(back)
+        top.add_widget(Label(text="AI Register Scanner", font_size=dp(16), bold=True, color=(0.1, 0.3, 0.1, 1)))
+        self.layout.add_widget(top)
+
+        if not AI_SCANNER_AVAILABLE:
+            self.layout.add_widget(Label(
+                text="AI Scanner module not available in this build.\n"
+                     "Add 'dairy_ai_scanner.py' to the project to enable this feature.",
+                font_size=dp(13)
+            ))
+        else:
+            self.status_lbl = Label(
+                text="Select a photo of your paper register to scan.",
+                font_size=dp(13), size_hint_y=None, height=dp(60)
+            )
+            self.layout.add_widget(self.status_lbl)
+
+            self.file_chooser = FileChooserIconView(filters=['*.png', '*.jpg', '*.jpeg'])
+            self.layout.add_widget(self.file_chooser)
+
+            btn_scan = make_button("Scan Selected Image", 46, 14, bg_color=(0.80, 0.40, 0.15, 1))
+            btn_scan.bind(on_press=self.run_scan)
+            self.layout.add_widget(btn_scan)
+
+        self.add_widget(self.layout)
+
+    def run_scan(self, _):
+        selection = self.file_chooser.selection
+        if not selection:
+            show_message("Error", "Pehle ek image select karein.")
+            return
+        image_path = selection[0]
+        self.status_lbl.text = "Scanning... please wait."
+
+        def do_scan():
+            try:
+                result = scan_dairy_register(image_path)
+                msg = f"Scan complete: {result}"
+            except Exception as e:
+                msg = f"Scan failed: {e}"
+            Clock.schedule_once(lambda dt: setattr(self.status_lbl, 'text', msg))
+
+        threading.Thread(target=do_scan, daemon=True).start()
+
+
+# ============================================================
+# APP
+# ============================================================
+
+class NilgiriDairyApp(App):
+    def build(self):
+        self.title = APP_NAME
+        init_db()
+
+        sm = ScreenManager()
+        sm.add_widget(HomeScreen(name="home"))
+        sm.add_widget(DailyEntryScreen(name="daily_entry"))
+        sm.add_widget(TodayScreen(name="today"))
+        sm.add_widget(CustomersScreen(name="customers"))
+        sm.add_widget(ReportsScreen(name="reports"))
+        sm.add_widget(ScanRegisterScreen(name="scan_register"))
+        return sm
+
+
+if __name__ == "__main__":
+    NilgiriDairyApp().run()
