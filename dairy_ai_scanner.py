@@ -2,23 +2,39 @@ import os
 import base64
 import json
 import requests
-import pandas as pd
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib import colors
 
-# API Key Base64 Encoded (GitHub safe)
-_PART = "QVEuQWI4Uk42TFlIZkM1NVhYSHZGeV9EcE9VY25kSHZuZ1dBZ1VIa3FURzVvSHowdzBOM0E="
-API_KEY = base64.b64decode(_PART.encode("utf-8")).decode("utf-8")
+# ============================================================
+# API KEY
+# ------------------------------------------------------------
+# NEVER hardcode the key here. It is loaded, in order of priority, from:
+#   1. The GEMINI_API_KEY environment variable (set this for local dev)
+#   2. secrets_config.py (auto-generated at CI build time, gitignored,
+#      never committed - see .github/workflows/build-apk.yml)
+# If neither is present, the scanner is disabled at runtime rather than
+# crashing the app.
+# ============================================================
+
+API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+if not API_KEY:
+    try:
+        import secrets_config
+        API_KEY = getattr(secrets_config, "GEMINI_API_KEY", "")
+    except Exception:
+        API_KEY = ""
+
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
 
 
 def scan_dairy_register(image_path: str):
     """
-    Image ko Google Vision Engine ko bhejta hai aur structured JSON array return karta hai.
+    Image ko Google Gemini ko bhejta hai aur structured JSON array return karta hai.
     Overwritten/doubtful entries ko 'doubtful_fields' me mark karta hai.
     """
+    if not API_KEY:
+        print("Scanner Error: GEMINI_API_KEY not configured for this build.")
+        return []
+
     try:
         with open(image_path, "rb") as f:
             image_bytes = f.read()
@@ -77,19 +93,34 @@ def scan_dairy_register(image_path: str):
 
 
 def export_to_excel(records: list, output_path: str):
-    """Extracted data ko Excel (.xlsx) file me save karta hai."""
+    """Extracted data ko Excel (.xlsx) file me save karta hai. Requires openpyxl."""
     try:
-        clean_rows = []
+        from openpyxl import Workbook
+    except Exception as e:
+        print(f"Excel Export Error: openpyxl not available ({e})")
+        return False
+
+    try:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Dairy Hisaab"
+        ws.append(["Date", "Morning Milk (L)", "Morning Rate", "Evening Milk (L)", "Evening Rate"])
+
         for r in records:
-            clean_rows.append({
-                "Date": r.get("date", ""),
-                "Morning Milk (L)": r.get("morning_qty", ""),
-                "Morning Rate": r.get("morning_rate", ""),
-                "Evening Milk (L)": r.get("evening_qty", ""),
-                "Evening Rate": r.get("evening_rate", "")
-            })
-        df = pd.DataFrame(clean_rows)
-        df.to_excel(output_path, index=False, engine="openpyxl")
+            ws.append([
+                r.get("date", ""),
+                r.get("morning_qty", ""),
+                r.get("morning_rate", ""),
+                r.get("evening_qty", ""),
+                r.get("evening_rate", ""),
+            ])
+
+        # Reasonable default column widths so the export is readable without
+        # manual resizing.
+        for col_letter, width in zip("ABCDE", (12, 16, 12, 16, 12)):
+            ws.column_dimensions[col_letter].width = width
+
+        wb.save(output_path)
         return True
     except Exception as e:
         print(f"Excel Export Error: {str(e)}")
@@ -97,7 +128,16 @@ def export_to_excel(records: list, output_path: str):
 
 
 def export_to_pdf(records: list, output_path: str, title: str = "Dairy Hisaab"):
-    """Extracted data ko clean A4 Table PDF me convert karta hai."""
+    """Extracted data ko clean A4 Table PDF me convert karta hai. Requires reportlab."""
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib import colors
+    except Exception as e:
+        print(f"PDF Export Error: reportlab not available ({e})")
+        return False
+
     try:
         doc = SimpleDocTemplate(output_path, pagesize=A4)
         elements = []
