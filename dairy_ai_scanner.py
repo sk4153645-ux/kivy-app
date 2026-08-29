@@ -7,6 +7,16 @@ import requests
 
 # ============================================================
 # API KEY RESOLVER
+# ------------------------------------------------------------
+# NEVER hardcode a key here, not even base64-encoded. Base64 is
+# encoding, not encryption - it is trivially reversible by anyone
+# who can read this file, including anyone browsing a public repo.
+#
+# The key is loaded, in order of priority, from:
+#   1. The GEMINI_API_KEY environment variable (for local dev)
+#   2. secrets_config.py (auto-generated at CI build time from a
+#      GitHub Actions secret, gitignored, never committed)
+# If neither is present, the scanner is disabled rather than crashing.
 # ============================================================
 
 def get_api_key():
@@ -15,7 +25,7 @@ def get_api_key():
     if key:
         return key
 
-    # 2. secrets_config.py
+    # 2. secrets_config.py (gitignored, injected at build time)
     try:
         import secrets_config
         key = getattr(secrets_config, "GEMINI_API_KEY", "").strip()
@@ -24,28 +34,24 @@ def get_api_key():
     except Exception:
         pass
 
-    # 3. Secure Built-in Fallback Key
-    encoded_fallback = "QVEuQWI4Uk42TFlIZkM1NVhYSHZTeV9EcE9VY25kSHZuZ1dBZ1VIa3FURzVvSHowdzBOM0E="
-    try:
-        return base64.b64decode(encoded_fallback).decode("utf-8")
-    except Exception:
-        return ""
+    return ""
 
 
 def clean_json_response(raw_text: str):
     """Markdown backticks ya extra text ko hata kar pure JSON array nikalta hai."""
     text = raw_text.strip()
+
     # Remove markdown codeblocks ```json ... ```
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\n", "", text)
         text = re.sub(r"\n```$", "", text)
-    
+
     # Locate array boundaries
     start_idx = text.find("[")
     end_idx = text.rfind("]")
     if start_idx != -1 and end_idx != -1:
-        text = text[start_idx : end_idx + 1]
-    
+        text = text[start_idx: end_idx + 1]
+
     return json.loads(text)
 
 
@@ -109,7 +115,8 @@ def scan_dairy_register(image_path: str):
             }
         }
 
-        api_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=){api_key}"
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+
         response = requests.post(api_url, json=payload, timeout=45)
 
         if response.status_code == 200:
