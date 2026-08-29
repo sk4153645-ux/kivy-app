@@ -8,7 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -53,13 +52,25 @@ jobs:
             $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;33.0.2" "platforms;android-33" || true
           fi
 
+      - name: Point buildozer.spec at the pre-installed NDK
+        run: |
+          NDK_DIR=$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -n1)
+          NDK_DIR="${NDK_DIR%/}"
+          echo "Detected installed NDK at: $NDK_DIR"
+          if [ -n "$NDK_DIR" ]; then
+            sed -i "s|^android.ndk_path = .*|android.ndk_path = $NDK_DIR|" buildozer.spec
+          else
+            echo "WARNING: no NDK found under \$ANDROID_HOME/ndk - build may try to download one."
+          fi
+          grep "android.ndk_path" buildozer.spec
+
       - name: Inject API Key
         run: |
           echo "GEMINI_API_KEY = \"${{ secrets.GEMINI_API_KEY }}\"" > secrets_config.py
 
       - name: Build APK
         run: |
-          buildozer -v android debug
+          yes | buildozer -v android debug
 
       - name: Upload APK
         if: success()
@@ -67,4 +78,3 @@ jobs:
         with:
           name: NilgiriDairy-APK
           path: bin/*.apk
-          
