@@ -57,12 +57,14 @@ jobs:
           NDK_DIR=$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -n1)
           NDK_DIR="${NDK_DIR%/}"
           echo "Detected installed NDK at: $NDK_DIR"
-          if [ -n "$NDK_DIR" ]; then
+          if [ -z "$NDK_DIR" ]; then
+            echo "WARNING: no NDK found under \$ANDROID_HOME/ndk - build may try to download one."
+          elif grep -q "^android.ndk_path" buildozer.spec; then
             sed -i "s|^android.ndk_path = .*|android.ndk_path = $NDK_DIR|" buildozer.spec
           else
-            echo "WARNING: no NDK found under \$ANDROID_HOME/ndk - build may try to download one."
+            sed -i "/^\[app\]/a android.ndk_path = $NDK_DIR" buildozer.spec
           fi
-          grep "android.ndk_path" buildozer.spec
+          grep "android.ndk_path" buildozer.spec || echo "(no android.ndk_path line found - continuing anyway)"
 
       - name: Inject API Key
         run: |
