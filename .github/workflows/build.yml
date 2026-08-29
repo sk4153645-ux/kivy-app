@@ -52,6 +52,18 @@ jobs:
             $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;33.0.2" "platforms;android-33" || true
           fi
 
+      - name: Compatibility symlinks for legacy sdkmanager path
+        run: |
+          # buildozer/python-for-android still looks for the old
+          # "$ANDROID_HOME/tools/bin/sdkmanager" location, which newer
+          # Android SDK installs no longer ship. Symlink every tool from
+          # cmdline-tools/latest/bin into that legacy path so it's found.
+          mkdir -p "$ANDROID_HOME/tools/bin"
+          for f in "$ANDROID_HOME"/cmdline-tools/latest/bin/*; do
+            ln -sf "$f" "$ANDROID_HOME/tools/bin/$(basename "$f")"
+          done
+          ls -la "$ANDROID_HOME/tools/bin"
+
       - name: Point buildozer.spec at the pre-installed NDK
         run: |
           NDK_DIR=$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -n1)
