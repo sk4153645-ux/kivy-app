@@ -1000,6 +1000,7 @@ class ScanRegisterScreen(Screen):
 class NilgiriDairyApp(App):
     def build(self):
         self.title = APP_NAME
+        self.request_android_permissions()
         init_db()
 
         sm = ScreenManager()
@@ -1010,6 +1011,21 @@ class NilgiriDairyApp(App):
         sm.add_widget(ReportsScreen(name="reports"))
         sm.add_widget(ScanRegisterScreen(name="scan_register"))
         return sm
+
+    def request_android_permissions(self):
+        # On Android 6.0+, declaring permissions in buildozer.spec is not
+        # enough - the app must also ask the user at runtime, or features
+        # like the file chooser / camera will silently show nothing.
+        try:
+            from android.permissions import request_permissions, Permission
+            perms = [Permission.CAMERA, Permission.WRITE_EXTERNAL_STORAGE]
+            try:
+                perms.append(Permission.READ_MEDIA_IMAGES)  # Android 13+
+            except AttributeError:
+                perms.append(Permission.READ_EXTERNAL_STORAGE)  # Older Android
+            request_permissions(perms)
+        except Exception:
+            pass  # Not running on Android (e.g. desktop testing) - ignore
 
 
 if __name__ == "__main__":
