@@ -5,7 +5,7 @@ package.domain = org.nilgiridairy
 source.dir = .
 source.include_exts = py,png,jpg,jpeg,kv,atlas,xlsx,whl,ttf,json
 version = 1.0
-requirements = python3==3.11,hostpython3==3.11,kivy,requests,certifi,urllib3,chardet,idna,openpyxl,plyer
+requirements = python3==3.11.9,hostpython3==3.11.9,kivy,requests,certifi,urllib3,chardet,idna,openpyxl,plyer
 android.permissions = INTERNET,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,CAMERA,READ_MEDIA_IMAGES
 orientation = portrait
 fullscreen = 0
