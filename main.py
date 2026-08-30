@@ -941,6 +941,7 @@ class ReportsScreen(Screen):
 class ScanRegisterScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.selected_image_path = None
         self.layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
 
         top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
@@ -960,13 +961,14 @@ class ScanRegisterScreen(Screen):
             ))
         else:
             self.status_lbl = Label(
-                text="Select a photo of your paper register to scan.",
+                text="No image selected yet.",
                 font_size=dp(13), size_hint_y=None, height=dp(60)
             )
             self.layout.add_widget(self.status_lbl)
 
-            self.file_chooser = FileChooserIconView(filters=['*.png', '*.jpg', '*.jpeg'])
-            self.layout.add_widget(self.file_chooser)
+            btn_pick = make_button("Choose Photo From Gallery", 46, 14, bg_color=(0.20, 0.45, 0.65, 1))
+            btn_pick.bind(on_press=self.open_native_picker)
+            self.layout.add_widget(btn_pick)
 
             btn_scan = make_button("Scan Selected Image", 46, 14, bg_color=(0.80, 0.40, 0.15, 1))
             btn_scan.bind(on_press=self.run_scan)
@@ -974,12 +976,33 @@ class ScanRegisterScreen(Screen):
 
         self.add_widget(self.layout)
 
+    def open_native_picker(self, _):
+        # Uses Android's native Storage Access Framework picker via plyer,
+        # instead of Kivy's own FileChooserIconView. This properly handles
+        # Android 10+ scoped storage without needing broad storage
+        # permissions - the OS grants access to just the chosen file.
+        try:
+            from plyer import filechooser
+            filechooser.open_file(
+                on_selection=self.on_file_selected,
+                filters=[["Images", "*.jpg", "*.jpeg", "*.png"]]
+            )
+        except Exception as e:
+            show_message("Error", f"Photo picker not available: {e}")
+
+    def on_file_selected(self, selection):
+        if selection:
+            self.selected_image_path = selection[0]
+            self.status_lbl.text = f"Selected: {os.path.basename(self.selected_image_path)}"
+        else:
+            self.selected_image_path = None
+            self.status_lbl.text = "No image selected yet."
+
     def run_scan(self, _):
-        selection = self.file_chooser.selection
-        if not selection:
+        if not self.selected_image_path:
             show_message("Error", "Pehle ek image select karein.")
             return
-        image_path = selection[0]
+        image_path = self.selected_image_path
         self.status_lbl.text = "Scanning... please wait."
 
         def do_scan():
