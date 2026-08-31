@@ -2,7 +2,7 @@ import sqlite3
 import requests
 
 SUPABASE_URL = "https://myprwqurrtspkhojbvoh.supabase.co"
-SUPABASE_KEY = "YAHAN_APNI_COPIED_KEY_PASTE_KARO"
+SUPABASE_KEY = "sb_publishable_gk10ZBPDPbAC9MmiPpfRDA_puJrnH--"
 
 class SyncManager:
     def __init__(self, db_path="dairy_v2.db"):
@@ -20,7 +20,7 @@ class SyncManager:
         return conn
 
     def sync_all(self):
-        """Unsynced customers aur entries ko Supabase par upload karta hai."""
+        """Unsynced customers, entries aur payments ko Supabase par upload karta hai."""
         conn = self._get_conn()
         cur = conn.cursor()
 
@@ -70,8 +70,8 @@ class SyncManager:
                     cur.execute("UPDATE milk_entries SET is_synced = 1 WHERE id = ?", (e["id"],))
 
             conn.commit()
-            return True, "Sync Successful!"
+            return True, "Data synced to cloud successfully!"
         except Exception as err:
-            return False, f"Sync Failed: {str(err)}"
+            return False, f"Sync error: {str(err)}"
         finally:
             conn.close()
