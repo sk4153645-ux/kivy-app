@@ -26,6 +26,12 @@ except Exception:
     AI_SCANNER_AVAILABLE = False
 
 try:
+    from sync_manager import SyncManager
+    SYNC_AVAILABLE = True
+except Exception:
+    SYNC_AVAILABLE = False
+
+try:
     from openpyxl import Workbook
     XLSX_AVAILABLE = True
 except Exception:
@@ -85,7 +91,9 @@ def init_db():
                 code TEXT NOT NULL DEFAULT '',
                 name TEXT NOT NULL,
                 phone TEXT NOT NULL DEFAULT '',
-                default_rate REAL
+                default_rate REAL,
+                updated_at TEXT DEFAULT '',
+                is_synced INTEGER DEFAULT 0
             )
         """)
 
@@ -98,6 +106,8 @@ def init_db():
                 litres REAL NOT NULL,
                 rate REAL NOT NULL,
                 amount REAL NOT NULL,
+                updated_at TEXT DEFAULT '',
+                is_synced INTEGER DEFAULT 0,
                 FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE,
                 UNIQUE(customer_id, entry_date, session)
             )
@@ -110,6 +120,8 @@ def init_db():
                 payment_date TEXT NOT NULL,
                 amount REAL NOT NULL,
                 note TEXT NOT NULL DEFAULT '',
+                updated_at TEXT DEFAULT '',
+                is_synced INTEGER DEFAULT 0,
                 FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE
             )
         """)
@@ -309,17 +321,39 @@ class HomeScreen(Screen):
         grid_main.add_widget(btn_ai_scan)
         body.add_widget(grid_main)
 
-        body.add_widget(Label(text="REPORTS & KHATA", font_size=dp(13), bold=True, color=(0.12, 0.37, 0.23, 1), size_hint_y=None, height=dp(22)))
+        body.add_widget(Label(text="REPORTS & CLOUD", font_size=dp(13), bold=True, color=(0.12, 0.37, 0.23, 1), size_hint_y=None, height=dp(22)))
 
         grid_reports = GridLayout(cols=2, spacing=dp(8), size_hint_y=None, height=dp(60))
         btn_reports = make_button("📊 Full Reports\n& Khata", 56, 13, bg_color=(0.35, 0.45, 0.40, 1))
         btn_reports.bind(on_press=lambda _: setattr(self.manager, "current", "reports"))
         grid_reports.add_widget(btn_reports)
+
+        btn_sync = make_button("☁️ Sync Data\n(Supabase Cloud)", 56, 13, bg_color=(0.20, 0.40, 0.65, 1))
+        btn_sync.bind(on_press=lambda _: self.trigger_cloud_sync())
+        grid_reports.add_widget(btn_sync)
+
         body.add_widget(grid_reports)
 
         scroll.add_widget(body)
         layout.add_widget(scroll)
         self.add_widget(layout)
+
+    def trigger_cloud_sync(self):
+        if not SYNC_AVAILABLE:
+            show_message("Sync Error", "sync_manager.py module not found.")
+            return
+
+        show_message("Syncing", "Connecting to cloud & syncing data... Please wait.")
+
+        def run_sync():
+            try:
+                manager = SyncManager(db_path=get_db_path())
+                success, msg = manager.sync_all()
+            except Exception as e:
+                success, msg = False, str(e)
+            Clock.schedule_once(lambda dt: show_message("Cloud Sync Status", msg))
+
+        threading.Thread(target=run_sync, daemon=True).start()
 
     def open_session_picker(self):
         box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
@@ -493,13 +527,14 @@ class DailyEntryScreen(Screen):
                 show_message("Error", "Valid numbers daalein.")
                 return
 
+            now_iso = datetime.utcnow().isoformat()
             try:
                 conn = get_db()
                 cur = conn.cursor()
                 cur.execute("""
-                    INSERT OR REPLACE INTO milk_entries (customer_id, entry_date, session, litres, rate, amount)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (cid, self.current_date, self.session, l, r, l * r))
+                    INSERT OR REPLACE INTO milk_entries (customer_id, entry_date, session, litres, rate, amount, updated_at, is_synced)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                """, (cid, self.current_date, self.session, l, r, l * r, now_iso))
                 conn.commit()
                 conn.close()
             except Exception as exc:
@@ -618,14 +653,15 @@ class CustomersScreen(Screen):
             cd = code_in.text.strip()
             ph = phone_in.text.strip()
             rt = parse_positive_float(rate_in.text)
+            now_iso = datetime.utcnow().isoformat()
 
             try:
                 conn = get_db()
                 cur = conn.cursor()
                 if cid:
-                    cur.execute("UPDATE customers SET code=?, name=?, phone=?, default_rate=? WHERE id=?", (cd, nm, ph, rt, cid))
+                    cur.execute("UPDATE customers SET code=?, name=?, phone=?, default_rate=?, updated_at=?, is_synced=0 WHERE id=?", (cd, nm, ph, rt, now_iso, cid))
                 else:
-                    cur.execute("INSERT INTO customers (code, name, phone, default_rate) VALUES (?, ?, ?, ?)", (cd, nm, ph, rt))
+                    cur.execute("INSERT INTO customers (code, name, phone, default_rate, updated_at, is_synced) VALUES (?, ?, ?, ?, ?, 0)", (cd, nm, ph, rt, now_iso))
                 conn.commit()
                 conn.close()
             except Exception as e:
@@ -916,11 +952,14 @@ class ReportsScreen(Screen):
             if not amt:
                 show_message("Error", "Valid amount daalein.")
                 return
+            now_iso = datetime.utcnow().isoformat()
             try:
                 conn = get_db()
                 cur = conn.cursor()
-                cur.execute("INSERT INTO payments (customer_id, payment_date, amount, note) VALUES (?, ?, ?, ?)",
-                            (cid, date.today().isoformat(), amt, note_in.text.strip()))
+                cur.execute("""
+                    INSERT INTO payments (customer_id, payment_date, amount, note, updated_at, is_synced)
+                    VALUES (?, ?, ?, ?, ?, 0)
+                """, (cid, date.today().isoformat(), amt, note_in.text.strip(), now_iso))
                 conn.commit()
                 conn.close()
             except Exception as exc:
@@ -933,8 +972,6 @@ class ReportsScreen(Screen):
         popup.open()
 
     def export_report(self, cid, name):
-        # Placeholder: hook up export_to_excel / export_to_pdf here once
-        # dairy_ai_scanner.py (or a local exporter) is added to the project.
         show_message("Export", "Export feature not wired up yet.\nAdd dairy_ai_scanner.py to enable this.")
 
 
@@ -977,10 +1014,6 @@ class ScanRegisterScreen(Screen):
         self.add_widget(self.layout)
 
     def open_native_picker(self, _):
-        # Uses Android's native Storage Access Framework picker via plyer,
-        # instead of Kivy's own FileChooserIconView. This properly handles
-        # Android 10+ scoped storage without needing broad storage
-        # permissions - the OS grants access to just the chosen file.
         try:
             from plyer import filechooser
             filechooser.open_file(
@@ -1036,9 +1069,6 @@ class NilgiriDairyApp(App):
         return sm
 
     def request_android_permissions(self):
-        # On Android 6.0+, declaring permissions in buildozer.spec is not
-        # enough - the app must also ask the user at runtime, or features
-        # like the file chooser / camera will silently show nothing.
         try:
             from android.permissions import request_permissions, Permission
             perms = [Permission.CAMERA, Permission.WRITE_EXTERNAL_STORAGE]
@@ -1048,7 +1078,7 @@ class NilgiriDairyApp(App):
                 perms.append(Permission.READ_EXTERNAL_STORAGE)  # Older Android
             request_permissions(perms)
         except Exception:
-            pass  # Not running on Android (e.g. desktop testing) - ignore
+            pass
 
 
 if __name__ == "__main__":
