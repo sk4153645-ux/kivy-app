@@ -16,24 +16,35 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: Install System Dependencies
         run: |
           sudo apt update
-          sudo apt install -y git zip unzip openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
+          sudo apt install -y git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
 
-      - name: Install Pinned Build Tools & Virtualenv Seed
+      - name: Fix Android SDK tools path for Buildozer
         run: |
-          python -m pip install --upgrade "pip==24.0" "setuptools<70.0.0" wheel
-          python -m pip install "buildozer==1.5.0" "cython==0.29.36" "virtualenv==20.25.3"
-          # Ensure target virtualenv seeds with compatible pip
-          python -m virtualenv --upgrade-embed-wheels
+          # Symlink modern cmdline-tools to legacy tools path expected by older buildozer logic
+          if [ -d "$ANDROID_HOME/cmdline-tools/latest" ] && [ ! -d "$ANDROID_HOME/tools" ]; then
+            sudo ln -s $ANDROID_HOME/cmdline-tools/latest $ANDROID_HOME/tools
+          fi
+
+      - name: Install Pinned Buildozer & Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install "cython<3.0"
+          python -m pip install --upgrade git+https://github.com/kivy/buildozer.git
+          python -m pip install --upgrade git+https://github.com/kivy/python-for-android.git
 
       - name: Build APK with Buildozer
         run: |
-          # Clean broken cached build env
-          rm -rf .buildozer/android/platform/build-arm64-v8a/build/venv
           buildozer android debug
 
       - name: Upload APK Artifact
