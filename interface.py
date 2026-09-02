@@ -1,10 +1,6 @@
-# interface.py - Pure UI Screens & Layouts (Nilgiri Dairy Original Theme)
-import os
+# interface.py - Production UI: Clean White Theme, Dialogs, Khata Ledger, Reports
+import datetime
 import threading
-from datetime import date, datetime
-
-from kivy.metrics import dp
-from kivy.clock import Clock
 from kivy.uix.screenmanager import Screen
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
@@ -13,1177 +9,816 @@ from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
 from kivy.uix.popup import Popup
+from kivy.utils import platform
 
-# Pure Database & Functioning Engine Import
 import database as db
+from auth_manager import AuthManager
+from services import DairyService, ValidationError
+from export_engine import ExportEngine
+import dairy_ai_scanner as scanner
 
-# Dynamic Safe Imports for Scanner/Cloud
-try:
-    from dairy_ai_scanner import scan_dairy_register
-    AI_SCANNER_AVAILABLE = True
-except Exception:
-    AI_SCANNER_AVAILABLE = False
+# Native Android Intents
+def send_sms_native(phone, message):
+    if not phone:
+        return False, "Phone number missing"
+    if platform == "android":
+        try:
+            from jnius import autoclass
+            Uri = autoclass('android.net.Uri')
+            Intent = autoclass('android.content.Intent')
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
 
-try:
-    from sync_manager import SyncManager
-    SYNC_AVAILABLE = True
-except Exception:
-    SYNC_AVAILABLE = False
+            uri = Uri.parse(f"smsto:{phone}")
+            intent = Intent(Intent.ACTION_SENDTO, uri)
+            intent.putExtra("sms_body", message)
+            PythonActivity.mActivity.startActivity(intent)
+            return True, "SMS Opened"
+        except Exception as e:
+            return False, str(e)
+    return True, "SMS: " + message
 
-try:
-    from plyer import filechooser
-    PLYER_FILECHOOSER = True
-except Exception:
-    PLYER_FILECHOOSER = False
+def send_whatsapp_native(phone, message):
+    if not phone:
+        return False, "Phone number missing"
+    if platform == "android":
+        try:
+            from jnius import autoclass
+            Uri = autoclass('android.net.Uri')
+            Intent = autoclass('android.content.Intent')
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
 
-
-# ============================================================
-# UI THEME CONSTANTS (Matched to Screenshot)
-# ============================================================
-COLOR_HEADER = (0.12, 0.37, 0.23, 1.0)       # Dark Green Header
-COLOR_BUY_ENTRY = (0.18, 0.55, 0.34, 1.0)    # Light Green
-COLOR_BUY_TODAY = (0.20, 0.50, 0.40, 1.0)    # Teal-Green
-COLOR_CUSTOMER = (0.22, 0.45, 0.65, 1.0)     # Blue
-COLOR_SCANNER = (0.80, 0.40, 0.15, 1.0)      # Orange
-COLOR_KHATA = (0.35, 0.45, 0.40, 1.0)        # Muted Dark Grey-Green
-COLOR_SETTINGS = (0.28, 0.38, 0.48, 1.0)     # Steel Blue
-COLOR_INACTIVE = (0.6, 0.6, 0.6, 1.0)
-
-
-def make_btn(text, height=52, font=14, bg_color=COLOR_BUY_ENTRY):
-    return Button(
-        text=text,
-        font_size=dp(font),
-        size_hint_y=None,
-        height=dp(height),
-        background_normal='',
-        background_color=bg_color,
-        color=(1, 1, 1, 1),
-        bold=True
-    )
-
-
-def make_input(hint="", value="", numeric=False):
-    return TextInput(
-        text=str(value) if value is not None else "",
-        hint_text=hint,
-        multiline=False,
-        font_size=dp(15),
-        input_filter="float" if numeric else None,
-        size_hint_y=None,
-        height=dp(46)
-    )
+            clean = phone.replace("+", "").replace(" ", "")
+            if len(clean) == 10:
+                clean = "91" + clean
+            uri = Uri.parse(f"whatsapp://send?phone={clean}&text={Uri.encode(message)}")
+            intent = Intent(Intent.ACTION_VIEW, uri)
+            PythonActivity.mActivity.startActivity(intent)
+            return True, "WhatsApp Opened"
+        except Exception as e:
+            return False, str(e)
+    return True, "WhatsApp: " + message
 
 
-def show_popup(title, msg):
-    box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
-    box.add_widget(Label(text=msg, font_size=dp(14)))
-    close = make_btn("OK", 40, 13, COLOR_HEADER)
-    box.add_widget(close)
-    pop = Popup(title=title, content=box, size_hint=(0.85, 0.35))
-    close.bind(on_press=pop.dismiss)
-    pop.open()
+# Header Component
+class AppHeader(BoxLayout):
+    def __init__(self, title="Nilgiri Dairy", back_callback=None, **kwargs):
+        super().__init__(**kwargs)
+        self.orientation = "horizontal"
+        self.size_hint_y = None
+        self.height = 55
+        self.padding = [8, 8]
+        self.spacing = 8
+
+        if back_callback:
+            back_btn = Button(text="< Back", size_hint_x=0.25, background_color=(0.3, 0.4, 0.45, 1), color=(1, 1, 1, 1))
+            back_btn.bind(on_press=back_callback)
+            self.add_widget(back_btn)
+
+        self.title_lbl = Label(text=title, font_size=18, bold=True, color=(0.1, 0.15, 0.2, 1))
+        self.add_widget(self.title_lbl)
+
+    def set_title(self, text):
+        self.title_lbl.text = text
 
 
-def parse_num(val):
-    try:
-        return float(val)
-    except Exception:
-        return 0.0
+# 1. LOGIN SCREEN
+class LoginScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        layout = BoxLayout(orientation="vertical", padding=25, spacing=15)
+        layout.add_widget(Label(text="Nilgiri Dairy Collection", font_size=24, bold=True, color=(0.1, 0.5, 0.3, 1), size_hint_y=0.2))
+        layout.add_widget(Label(text="Sign in to your account", font_size=14, color=(0.4, 0.4, 0.4, 1), size_hint_y=0.08))
+
+        self.email_in = TextInput(hint_text="Email Address", multiline=False, size_hint_y=0.12)
+        self.pass_in = TextInput(hint_text="Password", password=True, multiline=False, size_hint_y=0.12)
+        layout.add_widget(self.email_in)
+        layout.add_widget(self.pass_in)
+
+        btn_login = Button(text="LOGIN", bold=True, background_color=(0.1, 0.6, 0.35, 1), color=(1, 1, 1, 1), size_hint_y=0.13)
+        btn_login.bind(on_press=self.do_login)
+        layout.add_widget(btn_login)
+
+        btn_to_signup = Button(text="Create New Dairy Account (Sign Up)", background_color=(0.2, 0.5, 0.8, 1), color=(1, 1, 1, 1), size_hint_y=0.12)
+        btn_to_signup.bind(on_press=lambda x: setattr(self.manager, 'current', 'signup'))
+        layout.add_widget(btn_to_signup)
+        layout.add_widget(Label(size_hint_y=0.23))
+        self.add_widget(layout)
+
+    def do_login(self, *args):
+        email = self.email_in.text.strip()
+        pwd = self.pass_in.text.strip()
+        if not email or not pwd:
+            Popup(title="Error", content=Label(text="Enter Email & Password"), size_hint=(0.8, 0.3)).open()
+            return
+        success, msg = AuthManager.login(email, pwd)
+        if success:
+            self.manager.current = "home"
+        else:
+            Popup(title="Login Failed", content=Label(text=msg), size_hint=(0.8, 0.3)).open()
 
 
-# ============================================================
-# 1. HOME SCREEN (Original Layout + Dual Mode + Settings)
-# ============================================================
+# 2. SIGN UP SCREEN
+class SignUpScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        layout = BoxLayout(orientation="vertical", padding=20, spacing=10)
+        layout.add_widget(Label(text="Register New Dairy", font_size=20, bold=True, color=(0.1, 0.5, 0.3, 1), size_hint_y=0.12))
+
+        self.dname_in = TextInput(hint_text="Dairy Name", multiline=False, size_hint_y=0.1)
+        self.phone_in = TextInput(hint_text="Owner Phone Number", multiline=False, size_hint_y=0.1)
+        self.email_in = TextInput(hint_text="Email Address", multiline=False, size_hint_y=0.1)
+        self.pass_in = TextInput(hint_text="Create Password", password=True, multiline=False, size_hint_y=0.1)
+        layout.add_widget(self.dname_in)
+        layout.add_widget(self.phone_in)
+        layout.add_widget(self.email_in)
+        layout.add_widget(self.pass_in)
+
+        btn_signup = Button(text="SIGN UP", bold=True, background_color=(0.1, 0.6, 0.35, 1), color=(1, 1, 1, 1), size_hint_y=0.12)
+        btn_signup.bind(on_press=self.do_signup)
+        layout.add_widget(btn_signup)
+
+        btn_to_login = Button(text="Already have an account? Login", background_color=(0.4, 0.4, 0.4, 1), color=(1, 1, 1, 1), size_hint_y=0.1)
+        btn_to_login.bind(on_press=lambda x: setattr(self.manager, 'current', 'login'))
+        layout.add_widget(btn_to_login)
+        layout.add_widget(Label(size_hint_y=0.28))
+        self.add_widget(layout)
+
+    def do_signup(self, *args):
+        dname = self.dname_in.text.strip()
+        phone = self.phone_in.text.strip()
+        email = self.email_in.text.strip()
+        pwd = self.pass_in.text.strip()
+        if not dname or not email or not pwd:
+            Popup(title="Error", content=Label(text="All fields required!"), size_hint=(0.8, 0.3)).open()
+            return
+        success, msg = AuthManager.sign_up(email, pwd, dname, phone)
+        if success:
+            Popup(title="Success", content=Label(text="Account Created!"), size_hint=(0.8, 0.3)).open()
+            self.manager.current = "home"
+        else:
+            Popup(title="Sign Up Error", content=Label(text=msg), size_hint=(0.8, 0.3)).open()
+
+
+# 3. HOME SCREEN
 class HomeScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        layout = BoxLayout(orientation="vertical", spacing=dp(6))
+        self.root_box = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        self.header = AppHeader(title="Nilgiri Dairy Collection")
+        self.root_box.add_widget(self.header)
 
-        top_bar = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(4))
-        title_btn = Button(
-            text="Nilgiri Dairy App",
-            font_size=dp(18), bold=True,
-            background_normal='', background_color=COLOR_HEADER, color=(1, 1, 1, 1)
-        )
-        lang_btn = make_btn("अ/A", 54, 14, (0.15, 0.28, 0.18, 1.0))
-        lang_btn.size_hint_x = None
-        lang_btn.width = dp(65)
-        lang_btn.bind(on_press=self.toggle_lang)
+        grid = GridLayout(cols=2, spacing=10, size_hint_y=0.88)
+        grid.add_widget(self.make_btn("Buy Milk Entry\n(Kisan Doodh)", (0.12, 0.65, 0.38, 1), 'buy_milk'))
+        grid.add_widget(self.make_btn("Today's Milk\n(Aaj Ka Doodh)", (0.12, 0.55, 0.45, 1), 'collection_list'))
+        grid.add_widget(self.make_btn("Farmers & Khata\n(Kisan Ledger)", (0.2, 0.45, 0.7, 1), 'farmers'))
+        grid.add_widget(self.make_btn("AI Scanner\n(Register Scan)", (0.9, 0.5, 0.1, 1), 'scan_register'))
+        grid.add_widget(self.make_btn("Sell Milk Entry\n(Grahak Bikri)", (0.15, 0.6, 0.6, 1), 'daily_entry'))
+        grid.add_widget(self.make_btn("Customers\n(Grahak List)", (0.35, 0.45, 0.65, 1), 'customers'))
+        grid.add_widget(self.make_btn("Full Reports\n& Statements", (0.3, 0.5, 0.45, 1), 'reports'))
+        grid.add_widget(self.make_btn("Settings &\nHardware", (0.25, 0.35, 0.45, 1), 'settings'))
 
-        top_bar.add_widget(title_btn)
-        top_bar.add_widget(lang_btn)
-        layout.add_widget(top_bar)
+        self.root_box.add_widget(grid)
+        self.add_widget(self.root_box)
 
-        scroll = ScrollView()
-        body = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None, padding=[dp(10), dp(8)])
-        body.bind(minimum_height=body.setter("height"))
+    def make_btn(self, text, color, screen_name):
+        b = Button(text=text, background_color=color, color=(1, 1, 1, 1), halign="center")
+        b.bind(on_press=lambda x: setattr(self.manager, 'current', screen_name))
+        return b
 
-        grid_main = GridLayout(cols=2, spacing=dp(8), size_hint_y=None, height=dp(150))
-
-        btn_buy = make_btn("Buy Milk Entry\n(Kisan Doodh)", 70, 14, COLOR_BUY_ENTRY)
-        btn_today = make_btn("Today's Milk\n(Aaj Ka Doodh)", 70, 14, COLOR_BUY_TODAY)
-        btn_farmers = make_btn("Farmers\n(Kisan List)", 70, 14, COLOR_CUSTOMER)
-        btn_scan = make_btn("AI Scanner\n(Register Scan)", 70, 14, COLOR_SCANNER)
-
-        btn_buy.bind(on_press=lambda _: setattr(self.manager, "current", "buy_milk"))
-        btn_today.bind(on_press=lambda _: setattr(self.manager, "current", "collection_list"))
-        btn_farmers.bind(on_press=lambda _: setattr(self.manager, "current", "farmers"))
-        btn_scan.bind(on_press=lambda _: setattr(self.manager, "current", "scan_register"))
-
-        grid_main.add_widget(btn_buy)
-        grid_main.add_widget(btn_today)
-        grid_main.add_widget(btn_farmers)
-        grid_main.add_widget(btn_scan)
-        body.add_widget(grid_main)
-
-        body.add_widget(Label(text="RETAIL MILK SALES (दूध बिक्री)", font_size=dp(12), bold=True, color=(0.5, 0.5, 0.5, 1), size_hint_y=None, height=dp(20)))
-        grid_sale = GridLayout(cols=2, spacing=dp(8), size_hint_y=None, height=dp(65))
-        btn_sale = make_btn("Sell Milk Entry\n(Grahak Bikri)", 60, 13, (0.25, 0.55, 0.50, 1))
-        btn_cust = make_btn("Customers\n(Grahak List)", 60, 13, (0.35, 0.45, 0.60, 1))
-        btn_sale.bind(on_press=lambda _: setattr(self.manager, "current", "daily_entry"))
-        btn_cust.bind(on_press=lambda _: setattr(self.manager, "current", "customers"))
-        grid_sale.add_widget(btn_sale)
-        grid_sale.add_widget(btn_cust)
-        body.add_widget(grid_sale)
-
-        body.add_widget(Label(text="REPORTS & SETTINGS", font_size=dp(12), bold=True, color=(0.5, 0.5, 0.5, 1), size_hint_y=None, height=dp(20)))
-
-        btn_reports = make_btn("Full Reports & Khata", 50, 14, COLOR_KHATA)
-        btn_reports.bind(on_press=lambda _: setattr(self.manager, "current", "reports"))
-        body.add_widget(btn_reports)
-
-        grid_utils = GridLayout(cols=2, spacing=dp(8), size_hint_y=None, height=dp(52))
-        btn_sync = make_btn("☁️ Sync Cloud", 48, 13, (0.15, 0.35, 0.55, 1))
-        btn_settings = make_btn("⚙️ Settings", 48, 13, COLOR_SETTINGS)
-        btn_sync.bind(on_press=self.sync_cloud)
-        btn_settings.bind(on_press=lambda _: setattr(self.manager, "current", "settings"))
-        grid_utils.add_widget(btn_sync)
-        grid_utils.add_widget(btn_settings)
-        body.add_widget(grid_utils)
-
-        scroll.add_widget(body)
-        layout.add_widget(scroll)
-        self.add_widget(layout)
-
-    def toggle_lang(self, _):
-        cur = db.get_setting("language", "hi")
-        nxt = "en" if cur == "hi" else "hi"
-        db.set_setting("language", nxt)
-        show_popup("Language", f"Switched to {'English' if nxt == 'en' else 'Hindi'}")
-
-    def sync_cloud(self, _):
-        if not SYNC_AVAILABLE:
-            show_popup("Sync", "sync_manager module not found.")
-            return
-        show_popup("Syncing", "Syncing with Supabase Cloud...")
-
-        def run():
-            try:
-                m = SyncManager()
-                _, msg = m.sync_all()
-            except Exception as e:
-                msg = str(e)
-            Clock.schedule_once(lambda dt: show_popup("Sync Result", msg))
-        threading.Thread(target=run, daemon=True).start()
+    def on_pre_enter(self, *args):
+        self.header.set_title(db.get_setting("dairy_name", "Nilgiri Dairy Collection"))
 
 
-# ============================================================
-# 2. BUY MILK SCREEN (Collection Entry + Optional Fat/SNF)
-# ============================================================
+# 4. BUY MILK SCREEN (Validation, Khata Balance & 4 Active Action Buttons)
 class BuyMilkScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.shift = "Morning" if datetime.now().hour < 12 else "Evening"
-        self.milk_type = "Cow"
-        self.fid = None
-        self.farmer_phone = None
-        self.use_fixed_rate = False
+        self.last_saved_entry = None
 
-        layout = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(8))
+        layout = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        layout.add_widget(AppHeader(title="Buy Milk Entry", back_callback=lambda x: setattr(self.manager, 'current', 'home')))
 
-        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
-        back = make_btn("< Back", 42, 13, COLOR_KHATA)
-        back.size_hint_x = None
-        back.width = dp(70)
-        back.bind(on_press=lambda _: setattr(self.manager, "current", "home"))
-        top.add_widget(back)
-        top.add_widget(Label(text="📥 Buy Milk Entry", font_size=dp(16), bold=True, color=(0.1, 0.3, 0.1, 1)))
-        layout.add_widget(top)
+        # Shift
+        shift_box = BoxLayout(size_hint_y=0.08, spacing=8)
+        self.shift = "Morning"
+        self.btn_morn = Button(text="Morning", background_color=(0.1, 0.5, 0.8, 1), color=(1, 1, 1, 1))
+        self.btn_eve = Button(text="Evening", background_color=(0.7, 0.7, 0.7, 1), color=(1, 1, 1, 1))
+        self.btn_morn.bind(on_press=lambda x: self.set_shift("Morning"))
+        self.btn_eve.bind(on_press=lambda x: self.set_shift("Evening"))
+        shift_box.add_widget(self.btn_morn)
+        shift_box.add_widget(self.btn_eve)
+        layout.add_widget(shift_box)
 
-        s_box = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(6))
-        self.btn_m = make_btn("☀️ Morning", 36, 13, COLOR_SCANNER if self.shift == "Morning" else COLOR_INACTIVE)
-        self.btn_e = make_btn("🌙 Evening", 36, 13, COLOR_CUSTOMER if self.shift == "Evening" else COLOR_INACTIVE)
-        self.btn_m.bind(on_press=lambda _: self.set_shift("Morning"))
-        self.btn_e.bind(on_press=lambda _: self.set_shift("Evening"))
-        s_box.add_widget(self.btn_m)
-        s_box.add_widget(self.btn_e)
-        layout.add_widget(s_box)
-
-        self.code_in = make_input("Farmer Code (e.g. 01)")
-        self.code_in.bind(text=lambda *_: self.on_code_change())
+        # Farmer Code & Details
+        self.code_in = TextInput(hint_text="Farmer Code (e.g. 01)", multiline=False, size_hint_y=0.09)
+        self.code_in.bind(text=self.lookup_farmer)
         layout.add_widget(self.code_in)
-
-        self.farmer_lbl = Label(text="Farmer: Not Selected", font_size=dp(14), bold=True, size_hint_y=None, height=dp(24), color=(0.1, 0.2, 0.4, 1))
+        self.farmer_lbl = Label(text="Farmer: Not Selected | Khata: Rs.0.00", color=(0.2, 0.4, 0.8, 1), size_hint_y=0.06, bold=True)
         layout.add_widget(self.farmer_lbl)
 
-        t_box = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(6))
-        self.btn_cow = make_btn("🐄 Cow", 34, 13, COLOR_BUY_ENTRY)
-        self.btn_buff = make_btn("🐃 Buffalo", 34, 13, COLOR_INACTIVE)
-        self.btn_cow.bind(on_press=lambda _: self.set_type("Cow"))
-        self.btn_buff.bind(on_press=lambda _: self.set_type("Buffalo"))
-        t_box.add_widget(self.btn_cow)
-        t_box.add_widget(self.btn_buff)
-        layout.add_widget(t_box)
+        # Milk Type
+        mtype_box = BoxLayout(size_hint_y=0.08, spacing=8)
+        self.milk_type = "Cow"
+        self.btn_cow = Button(text="Cow", background_color=(0.1, 0.6, 0.35, 1), color=(1, 1, 1, 1))
+        self.btn_buff = Button(text="Buffalo", background_color=(0.7, 0.7, 0.7, 1), color=(1, 1, 1, 1))
+        self.btn_cow.bind(on_press=lambda x: self.set_milk_type("Cow"))
+        self.btn_buff.bind(on_press=lambda x: self.set_milk_type("Buffalo"))
+        mtype_box.add_widget(self.btn_cow)
+        mtype_box.add_widget(self.btn_buff)
+        layout.add_widget(mtype_box)
 
-        self.litres_in = make_input("Litres (लीटर) *", numeric=True)
+        # Quantity Inputs
+        self.litres_in = TextInput(hint_text="Litres *", multiline=False, size_hint_y=0.09)
+        self.litres_in.bind(text=self.recalculate)
         layout.add_widget(self.litres_in)
 
-        f_s_box = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
-        self.fat_in = make_input("Fat % (Optional)", numeric=True)
-        self.snf_in = make_input("SNF/CLR (Optional)", numeric=True)
-        f_s_box.add_widget(self.fat_in)
-        f_s_box.add_widget(self.snf_in)
-        layout.add_widget(f_s_box)
+        fat_snf_box = BoxLayout(size_hint_y=0.09, spacing=8)
+        self.fat_in = TextInput(hint_text="Fat % (Optional)", multiline=False)
+        self.fat_in.bind(text=self.recalculate)
+        self.snf_in = TextInput(hint_text="SNF/CLR (Optional)", multiline=False)
+        self.snf_in.bind(text=self.recalculate)
+        fat_snf_box.add_widget(self.fat_in)
+        fat_snf_box.add_widget(self.snf_in)
+        layout.add_widget(fat_snf_box)
 
-        self.rate_in = make_input("Rate (₹/L) (Auto/Manual)", numeric=True)
+        self.rate_in = TextInput(hint_text="Rate (Rs/L) *", multiline=False, size_hint_y=0.09)
+        self.rate_in.bind(text=self.recalculate)
         layout.add_widget(self.rate_in)
 
-        self.litres_in.bind(text=lambda *_: self.calc())
-        self.fat_in.bind(text=lambda *_: self.calc())
-        self.snf_in.bind(text=lambda *_: self.calc())
-        self.rate_in.bind(text=lambda *_: self.calc(manual=True))
-
-        self.total_lbl = Label(text="TOTAL: ₹ 0.00", font_size=dp(18), bold=True, size_hint_y=None, height=dp(42), color=COLOR_HEADER)
+        self.total_lbl = Label(text="TOTAL: Rs. 0.00", font_size=20, bold=True, color=(0.1, 0.5, 0.3, 1), size_hint_y=0.08)
         layout.add_widget(self.total_lbl)
 
-        a_box = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
-        btn_s = make_btn("💾 SAVE", 46, 14, COLOR_BUY_ENTRY)
-        btn_sp = make_btn("🖨️ SAVE & PRINT", 46, 14, COLOR_CUSTOMER)
-        btn_s.bind(on_press=lambda _: self.save_data(print_slip=False))
-        btn_sp.bind(on_press=lambda _: self.save_data(print_slip=True))
-        a_box.add_widget(btn_s)
-        a_box.add_widget(btn_sp)
-        layout.add_widget(a_box)
+        # 4 Action Buttons
+        grid = GridLayout(cols=2, spacing=8, size_hint_y=0.22)
+        self.btn_save = Button(text="[+] SAVE ENTRY", bold=True, background_color=(0.1, 0.6, 0.35, 1), color=(1, 1, 1, 1))
+        self.btn_save.bind(on_press=self.confirm_and_save)
+        grid.add_widget(self.btn_save)
 
+        self.btn_print = Button(text="PRINT RECEIPT", bold=True, background_color=(0.2, 0.45, 0.7, 1), color=(1, 1, 1, 1))
+        self.btn_print.bind(on_press=self.print_receipt)
+        grid.add_widget(self.btn_print)
+
+        self.btn_whatsapp = Button(text="WHATSAPP", bold=True, background_color=(0.15, 0.65, 0.4, 1), color=(1, 1, 1, 1))
+        self.btn_whatsapp.bind(on_press=self.send_whatsapp)
+        grid.add_widget(self.btn_whatsapp)
+
+        self.btn_sms = Button(text="SEND SMS", bold=True, background_color=(0.85, 0.45, 0.1, 1), color=(1, 1, 1, 1))
+        self.btn_sms.bind(on_press=self.send_sms)
+        grid.add_widget(self.btn_sms)
+
+        layout.add_widget(grid)
         self.add_widget(layout)
 
     def set_shift(self, s):
         self.shift = s
-        self.btn_m.background_color = COLOR_SCANNER if s == "Morning" else COLOR_INACTIVE
-        self.btn_e.background_color = COLOR_CUSTOMER if s == "Evening" else COLOR_INACTIVE
+        self.btn_morn.background_color = (0.1, 0.5, 0.8, 1) if s == "Morning" else (0.7, 0.7, 0.7, 1)
+        self.btn_eve.background_color = (0.1, 0.5, 0.8, 1) if s == "Evening" else (0.7, 0.7, 0.7, 1)
 
-    def set_type(self, t):
+    def set_milk_type(self, t):
         self.milk_type = t
-        self.btn_cow.background_color = COLOR_BUY_ENTRY if t == "Cow" else COLOR_INACTIVE
-        self.btn_buff.background_color = COLOR_CUSTOMER if t == "Buffalo" else COLOR_INACTIVE
-        self.calc()
+        self.btn_cow.background_color = (0.1, 0.6, 0.35, 1) if t == "Cow" else (0.7, 0.7, 0.7, 1)
+        self.btn_buff.background_color = (0.1, 0.6, 0.35, 1) if t == "Buffalo" else (0.7, 0.7, 0.7, 1)
+        self.recalculate()
 
-    def on_code_change(self):
-        cd = self.code_in.text.strip()
-        farmer = db.get_farmer_by_code(cd)
-        if farmer:
-            self.fid, name, mtype, rate, phone = farmer
-            self.farmer_phone = phone
-            self.farmer_lbl.text = f"Farmer: [{cd}] {name}"
-            if mtype:
-                self.milk_type = mtype
-                self.btn_cow.background_color = COLOR_BUY_ENTRY if mtype == "Cow" else COLOR_INACTIVE
-                self.btn_buff.background_color = COLOR_CUSTOMER if mtype == "Buffalo" else COLOR_INACTIVE
-            if rate and rate > 0:
-                # Farmer has a fixed rate - use it, and do NOT let fat/snf
-                # auto-calculation silently overwrite it.
-                self.use_fixed_rate = True
-                self.rate_in.text = str(rate)
-            else:
-                self.use_fixed_rate = False
-            self.calc()
+    def lookup_farmer(self, *args):
+        code = self.code_in.text.strip()
+        conn = db.get_db()
+        f = conn.execute("SELECT * FROM farmers WHERE code = ?", (code,)).fetchone()
+        conn.close()
+        if f:
+            balance = db.get_farmer_khata_balance(code)
+            self.farmer_lbl.text = f"Farmer: [{f['code']}] {f['name']} | Khata: Rs.{balance:.2f}"
+            if f["rate_type"] == "fixed" and f["fixed_rate"] > 0:
+                self.rate_in.text = str(f["fixed_rate"])
         else:
-            self.fid = None
-            self.farmer_phone = None
-            self.use_fixed_rate = False
-            self.farmer_lbl.text = "Farmer: Not Found"
+            self.farmer_lbl.text = "Farmer: Not Found | Khata: Rs.0.00"
 
-    def calc(self, manual=False):
-        l = parse_num(self.litres_in.text)
-        fat = parse_num(self.fat_in.text)
-        snf = parse_num(self.snf_in.text)
-        if manual or self.use_fixed_rate:
-            r = parse_num(self.rate_in.text)
-        else:
-            r = db.calculate_milk_rate(fat, snf, self.milk_type)
-            self.rate_in.text = f"{r:.2f}"
-        self.total_lbl.text = f"TOTAL: ₹ {l * r:.2f}"
+    def recalculate(self, *args):
+        try:
+            litres = float(self.litres_in.text or 0)
+            rate = float(self.rate_in.text or 0)
+            self.total_lbl.text = f"TOTAL: Rs. {litres * rate:.2f}"
+        except ValueError:
+            self.total_lbl.text = "TOTAL: Invalid Input"
 
-    def save_data(self, print_slip):
-        if not self.fid:
-            show_popup("Error", "Pehle Sahi Farmer Code Daalein.")
+    def confirm_and_save(self, *args):
+        try:
+            code = self.code_in.text.strip()
+            litres = self.litres_in.text.strip()
+            rate = self.rate_in.text.strip()
+            fat = self.fat_in.text.strip()
+            snf = self.snf_in.text.strip()
+
+            entry_id, total = DairyService.save_milk_entry(
+                code, self.shift, self.milk_type, litres, fat, snf, rate
+            )
+
+            self.last_saved_entry = {
+                "id": entry_id, "date": datetime.date.today().isoformat(), "shift": self.shift,
+                "code": code, "milk_type": self.milk_type, "litres": litres,
+                "fat": fat, "snf": snf, "rate": rate, "total": total
+            }
+            new_bal = db.get_farmer_khata_balance(code)
+            self.farmer_lbl.text = f"Farmer: [{code}] Saved! | New Khata: Rs.{new_bal:.2f}"
+            Popup(title="Success", content=Label(text=f"Entry Saved: Rs.{total}"), size_hint=(0.7, 0.25)).open()
+        except ValidationError as ve:
+            Popup(title="Validation Error", content=Label(text=str(ve)), size_hint=(0.8, 0.3)).open()
+        except Exception as e:
+            Popup(title="Error", content=Label(text=f"Failed: {str(e)}"), size_hint=(0.8, 0.3)).open()
+
+    def format_receipt_msg(self):
+        e = self.last_saved_entry
+        dname = db.get_setting("dairy_name", "Nilgiri Dairy")
+        return (
+            f"*{dname}*\n"
+            f"Date: {e['date']} ({e['shift']})\n"
+            f"Farmer: [{e['code']}] | Type: {e['milk_type']}\n"
+            f"Weight: {e['litres']} L | Rate: Rs.{e['rate']}\n"
+            f"Fat: {e['fat']}% | SNF: {e['snf']}\n"
+            f"*Total: Rs.{e['total']}*\nThank you!"
+        )
+
+    def print_receipt(self, *args):
+        if not self.last_saved_entry:
+            Popup(title="Print", content=Label(text="Save an entry first!"), size_hint=(0.7, 0.25)).open()
             return
-        l = parse_num(self.litres_in.text)
-        r = parse_num(self.rate_in.text)
-        if l <= 0 or r <= 0:
-            show_popup("Error", "Litres aur Rate daalna zaroori hai.")
+        mac = db.get_setting("printer_mac")
+        msg = f"Sent to Printer: {mac}" if mac else "Please set Printer MAC in Settings"
+        Popup(title="Printer Status", content=Label(text=msg), size_hint=(0.8, 0.3)).open()
+
+    def send_whatsapp(self, *args):
+        if not self.last_saved_entry:
+            Popup(title="WhatsApp", content=Label(text="Save an entry first!"), size_hint=(0.7, 0.25)).open()
             return
-        amt = round(l * r, 2)
-        fat = parse_num(self.fat_in.text)
-        snf = parse_num(self.snf_in.text)
+        conn = db.get_db()
+        f = conn.execute("SELECT phone FROM farmers WHERE code = ?", (self.last_saved_entry["code"],)).fetchone()
+        conn.close()
+        send_whatsapp_native(f["phone"] if f else "", self.format_receipt_msg())
 
-        ok, msg = db.save_buy_entry(self.fid, self.shift, self.milk_type, l, fat, snf, r, amt)
-        if not ok:
-            show_popup("Error", f"Save failed: {msg}")
+    def send_sms(self, *args):
+        if not self.last_saved_entry:
+            Popup(title="SMS", content=Label(text="Save an entry first!"), size_hint=(0.7, 0.25)).open()
             return
-
-        name = self.farmer_lbl.text.split("] ")[-1]
-        result_lines = [f"Saved! Total ₹{amt:.2f}"]
-
-        if print_slip:
-            p_ok, p_msg = db.print_collection_slip(self.shift, name, self.code_in.text.strip(), self.milk_type, l, fat, snf, r, amt)
-            result_lines.append(f"Print: {p_msg}")
-
-        due = db.get_farmer_due_balance(self.fid)
-        msg_text = db.format_collection_message(self.shift, name, self.milk_type, l, fat, snf, r, amt, due)
-
-        if db.get_setting("auto_sms", "0") == "1" and self.farmer_phone:
-            s_ok, s_msg = db.send_native_sms(self.farmer_phone, msg_text)
-            result_lines.append(f"SMS: {s_msg}")
-
-        if db.get_setting("auto_whatsapp", "0") == "1" and self.farmer_phone:
-            w_ok, w_msg = db.open_whatsapp_chat(self.farmer_phone, msg_text)
-            result_lines.append(f"WhatsApp: {w_msg}")
-
-        show_popup("Result", "\n".join(result_lines))
-        self.litres_in.text = ""
-        self.fat_in.text = ""
-        self.snf_in.text = ""
-        self.total_lbl.text = "TOTAL: ₹ 0.00"
+        conn = db.get_db()
+        f = conn.execute("SELECT phone FROM farmers WHERE code = ?", (self.last_saved_entry["code"],)).fetchone()
+        conn.close()
+        send_sms_native(f["phone"] if f else "", self.format_receipt_msg())
 
 
-# ============================================================
-# 3. TODAY'S COLLECTION LIST
-# ============================================================
+# 5. TODAY'S MILK SCREEN (Pali Summary & Edit/Delete Action)
 class CollectionListScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
+        layout = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        layout.add_widget(AppHeader(title="Today's Shift Collection", back_callback=lambda x: setattr(self.manager, 'current', 'home')))
 
-        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
-        back = make_btn("< Back", 42, 13, COLOR_KHATA)
-        back.size_hint_x = None
-        back.width = dp(70)
-        back.bind(on_press=lambda _: setattr(self.manager, "current", "home"))
-        top.add_widget(back)
-        top.add_widget(Label(text="📋 Today's Collection List", font_size=dp(15), bold=True, color=(0.1, 0.3, 0.1, 1)))
-        layout.add_widget(top)
+        shift_bar = BoxLayout(size_hint_y=0.08, spacing=8)
+        self.shift = "Morning"
+        self.btn_m = Button(text="Morning", background_color=(0.1, 0.5, 0.8, 1), color=(1, 1, 1, 1))
+        self.btn_e = Button(text="Evening", background_color=(0.7, 0.7, 0.7, 1), color=(1, 1, 1, 1))
+        self.btn_m.bind(on_press=lambda x: self.load_data("Morning"))
+        self.btn_e.bind(on_press=lambda x: self.load_data("Evening"))
+        shift_bar.add_widget(self.btn_m)
+        shift_bar.add_widget(self.btn_e)
+        layout.add_widget(shift_bar)
 
-        scroll = ScrollView()
-        self.list_layout = GridLayout(cols=1, spacing=dp(5), size_hint_y=None)
-        self.list_layout.bind(minimum_height=self.list_layout.setter("height"))
-        scroll.add_widget(self.list_layout)
-        layout.add_widget(scroll)
+        # Split Summary Cards
+        cards = BoxLayout(orientation="vertical", size_hint_y=0.32, spacing=5)
+        self.cow_card = Label(text="Cow: 0.0 L | Avg Fat: 0.0 | Rs.0.00", color=(0.1, 0.5, 0.2, 1), bold=True)
+        self.buff_card = Label(text="Buffalo: 0.0 L | Avg Fat: 0.0 | Rs.0.00", color=(0.1, 0.3, 0.7, 1), bold=True)
+        self.grand_card = Label(text="Grand Total: 0.0 L | Rs.0.00", color=(0.8, 0.3, 0.1, 1), font_size=16, bold=True)
+        cards.add_widget(self.cow_card)
+        cards.add_widget(self.buff_card)
+        cards.add_widget(self.grand_card)
+        layout.add_widget(cards)
 
-        self.summary_bar = Button(
-            text="Day Total: 0.00 L | ₹ 0.00",
-            font_size=dp(14), bold=True, size_hint_y=None, height=dp(40),
-            background_normal='', background_color=COLOR_HEADER, color=(1, 1, 1, 1)
-        )
-        layout.add_widget(self.summary_bar)
+        self.scroll = ScrollView(size_hint_y=0.52)
+        self.list_box = GridLayout(cols=1, spacing=5, size_hint_y=None)
+        self.list_box.bind(minimum_height=self.list_box.setter('height'))
+        self.scroll.add_widget(self.list_box)
+        layout.add_widget(self.scroll)
+
         self.add_widget(layout)
 
-    def on_pre_enter(self):
-        self.list_layout.clear_widgets()
-        rows, total_l, total_a = db.get_today_collection()
-        for code, name, shift, mtype, l, fat, snf, rate, amt in rows:
-            btn = Button(
-                text=f"  [{code}] {name} ({shift} • {mtype})\n  {l:.2f}L | Fat:{fat:.1f} | Rate:₹{rate:.2f} | ₹{amt:.2f}",
-                font_size=dp(13), size_hint_y=None, height=dp(58),
-                background_normal='', background_color=(0.90, 0.95, 0.90, 1), color=(0.1, 0.2, 0.1, 1),
-                halign='left', valign='middle'
-            )
-            btn.bind(size=btn.setter('text_size'))
-            self.list_layout.add_widget(btn)
+    def on_pre_enter(self, *args):
+        self.load_data(self.shift)
 
-        if not rows:
-            self.list_layout.add_widget(Label(text="No collection recorded today.", font_size=dp(13), size_hint_y=None, height=dp(50)))
-        self.summary_bar.text = f"Day Total: {total_l:.2f} L | ₹{total_a:.2f}"
+    def load_data(self, shift):
+        self.shift = shift
+        self.btn_m.background_color = (0.1, 0.5, 0.8, 1) if shift == "Morning" else (0.7, 0.7, 0.7, 1)
+        self.btn_e.background_color = (0.1, 0.5, 0.8, 1) if shift == "Evening" else (0.7, 0.7, 0.7, 1)
+
+        date_today = datetime.date.today().isoformat()
+        summary = db.get_shift_summary(date_today, shift)
+        c = summary["Cow"]
+        b = summary["Buffalo"]
+        self.cow_card.text = f"Cow Milk: {c['litres']} L | Avg Fat: {c['avg_fat']}% | Rs.{c['amount']}"
+        self.buff_card.text = f"Buffalo Milk: {b['litres']} L | Avg Fat: {b['avg_fat']}% | Rs.{b['amount']}"
+        self.grand_card.text = f"Grand Total: {c['litres'] + b['litres']:.2f} L | Total: Rs.{c['amount'] + b['amount']:.2f}"
+
+        self.list_box.clear_widgets()
+        conn = db.get_db()
+        rows = conn.execute("SELECT * FROM milk_purchases WHERE date = ? AND shift = ? ORDER BY id DESC", (date_today, shift)).fetchall()
+        conn.close()
+
+        for r in rows:
+            box = BoxLayout(size_hint_y=None, height=40, spacing=8)
+            info = Label(text=f"[{r['farmer_code']}] {r['milk_type']} {r['litres']}L @ Rs.{r['rate']} = Rs.{r['total_amount']}", color=(0.15, 0.15, 0.15, 1), size_hint_x=0.75)
+            btn_del = Button(text="Delete", background_color=(0.85, 0.2, 0.2, 1), color=(1, 1, 1, 1), size_hint_x=0.25)
+            btn_del.bind(on_press=lambda x, eid=r['id']: self.confirm_delete(eid))
+            box.add_widget(info)
+            box.add_widget(btn_del)
+            self.list_box.add_widget(box)
+
+    def confirm_delete(self, entry_id):
+        content = BoxLayout(orientation="vertical", spacing=10, padding=10)
+        content.add_widget(Label(text="Delete this entry permanently?"))
+        btn_box = BoxLayout(spacing=8, size_hint_y=0.4)
+        pop = Popup(title="Confirm Delete", content=content, size_hint=(0.8, 0.3))
+
+        btn_yes = Button(text="YES, DELETE", background_color=(0.8, 0.2, 0.2, 1), color=(1, 1, 1, 1))
+        def do_del(x):
+            DairyService.delete_milk_entry(entry_id)
+            pop.dismiss()
+            self.load_data(self.shift)
+        btn_yes.bind(on_press=do_del)
+
+        btn_no = Button(text="CANCEL")
+        btn_no.bind(on_press=pop.dismiss)
+        btn_box.add_widget(btn_yes)
+        btn_box.add_widget(btn_no)
+        content.add_widget(btn_box)
+        pop.open()
 
 
-# ============================================================
-# 4. FARMERS LIST & KHATA (Compact Format)
-# ============================================================
+# 6. FARMERS MASTER & RUNNING KHATA SETTLEMENT
 class FarmersScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
+        layout = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        layout.add_widget(AppHeader(title="Farmers & Khata", back_callback=lambda x: setattr(self.manager, 'current', 'home')))
 
-        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
-        back = make_btn("< Back", 42, 13, COLOR_KHATA)
-        back.size_hint_x = None
-        back.width = dp(70)
-        back.bind(on_press=lambda _: setattr(self.manager, "current", "home"))
-        top.add_widget(back)
-        top.add_widget(Label(text="🚜 Farmers List (किसान)", font_size=dp(16), bold=True, color=(0.1, 0.3, 0.1, 1)))
+        add_box = BoxLayout(size_hint_y=0.1, spacing=6)
+        self.code_in = TextInput(hint_text="Code *", multiline=False, size_hint_x=0.25)
+        self.name_in = TextInput(hint_text="Name *", multiline=False, size_hint_x=0.45)
+        self.phone_in = TextInput(hint_text="Phone", multiline=False, size_hint_x=0.3)
+        add_box.add_widget(self.code_in)
+        add_box.add_widget(self.name_in)
+        add_box.add_widget(self.phone_in)
+        layout.add_widget(add_box)
 
-        add_btn = make_btn("+ Add", 42, 13, COLOR_BUY_ENTRY)
-        add_btn.size_hint_x = None
-        add_btn.width = dp(75)
-        add_btn.bind(on_press=lambda _: self.farmer_form())
-        top.add_widget(add_btn)
-        layout.add_widget(top)
+        btn_add = Button(text="+ Add New Farmer", background_color=(0.1, 0.6, 0.35, 1), color=(1, 1, 1, 1), size_hint_y=0.08)
+        btn_add.bind(on_press=self.add_farmer)
+        layout.add_widget(btn_add)
 
-        self.search_in = TextInput(hint_text="🔍 Search Farmer...", multiline=False, font_size=dp(15), size_hint_y=None, height=dp(44))
-        self.search_in.bind(text=lambda *_: self.load())
-        layout.add_widget(self.search_in)
+        btn_settle = Button(text="💰 Settle Khata Payment (Cash / Online)", background_color=(0.2, 0.45, 0.7, 1), color=(1, 1, 1, 1), size_hint_y=0.08)
+        btn_settle.bind(on_press=self.open_settlement_popup)
+        layout.add_widget(btn_settle)
 
-        scroll = ScrollView()
-        self.list_layout = GridLayout(cols=1, spacing=dp(5), size_hint_y=None)
-        self.list_layout.bind(minimum_height=self.list_layout.setter("height"))
-        scroll.add_widget(self.list_layout)
-        layout.add_widget(scroll)
+        self.scroll = ScrollView(size_hint_y=0.74)
+        self.list_box = GridLayout(cols=1, spacing=6, size_hint_y=None)
+        self.list_box.bind(minimum_height=self.list_box.setter('height'))
+        self.scroll.add_widget(self.list_box)
+        layout.add_widget(self.scroll)
+
         self.add_widget(layout)
 
-    def on_pre_enter(self):
-        self.load()
+    def on_pre_enter(self, *args):
+        self.refresh_list()
 
-    def load(self):
-        self.list_layout.clear_widgets()
-        search = self.search_in.text.strip().lower()
-        rows = db.get_farmers_with_balance()
-
-        if not rows:
-            self.list_layout.add_widget(Label(text="No farmers yet. Tap '+ Add' to create one.", font_size=dp(13), size_hint_y=None, height=dp(50)))
+    def add_farmer(self, *args):
+        code = self.code_in.text.strip()
+        name = self.name_in.text.strip()
+        phone = self.phone_in.text.strip()
+        if not code or not name:
+            Popup(title="Error", content=Label(text="Code and Name required"), size_hint=(0.8, 0.3)).open()
             return
+        conn = db.get_db()
+        try:
+            with conn:
+                conn.execute("INSERT INTO farmers (code, name, phone) VALUES (?, ?, ?)", (code, name, phone))
+            self.code_in.text = ""
+            self.name_in.text = ""
+            self.phone_in.text = ""
+            self.refresh_list()
+        except sqlite3.IntegrityError:
+            Popup(title="Duplicate Code", content=Label(text="Farmer code already exists!"), size_hint=(0.8, 0.3)).open()
+        finally:
+            conn.close()
 
-        for fid, cd_str, name, phone, mtype, rate, due in rows:
-            if search and search not in name.lower() and search not in cd_str.lower():
-                continue
+    def refresh_list(self):
+        self.list_box.clear_widgets()
+        conn = db.get_db()
+        farmers = conn.execute("SELECT * FROM farmers ORDER BY CAST(code AS INTEGER) ASC").fetchall()
+        conn.close()
+        for f in farmers:
+            bal = db.get_farmer_khata_balance(f['code'])
+            lbl = Label(text=f"[{f['code']}] {f['name']} | Khata Balance: Rs.{bal:.2f}", size_hint_y=None, height=35, color=(0.15, 0.15, 0.15, 1))
+            self.list_box.add_widget(lbl)
 
-            row_box = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(4))
-            name_btn = Button(
-                text=f" [{cd_str}] {name}\n 📞 {phone or '-'} • {mtype}", font_size=dp(13),
-                background_normal='', background_color=(0.95, 0.95, 0.95, 1), color=(0.1, 0.1, 0.1, 1),
-                halign='left', valign='middle'
-            )
-            name_btn.bind(size=name_btn.setter('text_size'))
-            name_btn.bind(on_press=lambda _, f=fid, n=name, cd=cd_str, p=phone, m=mtype, r=rate: self.farmer_form(f, n, cd, p, m, r))
+    def open_settlement_popup(self, *args):
+        content = BoxLayout(orientation="vertical", spacing=10, padding=10)
+        code_input = TextInput(hint_text="Farmer Code", multiline=False, size_hint_y=0.18)
+        amt_input = TextInput(hint_text="Settlement Amount (Rs)", multiline=False, size_hint_y=0.18)
 
-            due_btn = Button(
-                text=f"₹ {due:.2f}\n{'Dena Baaki' if due > 0 else 'Clear'}", font_size=dp(13), bold=True,
-                size_hint_x=None, width=dp(110), background_normal='',
-                background_color=(0.95, 0.85, 0.85, 1) if due > 0 else (0.85, 0.95, 0.85, 1),
-                color=(0.7, 0.1, 0.1, 1) if due > 0 else (0.1, 0.5, 0.1, 1)
-            )
-            due_btn.bind(on_press=lambda _, f=fid, n=name, d=due: self.pay_popup(f, n, d))
+        mode_box = BoxLayout(size_hint_y=0.18, spacing=8)
+        mode = ["Cash"]
+        btn_c = Button(text="Cash", background_color=(0.1, 0.6, 0.35, 1), color=(1, 1, 1, 1))
+        btn_o = Button(text="Online (UPI/Bank)", background_color=(0.7, 0.7, 0.7, 1), color=(1, 1, 1, 1))
+        def set_m(m):
+            mode[0] = m
+            btn_c.background_color = (0.1, 0.6, 0.35, 1) if m == "Cash" else (0.7, 0.7, 0.7, 1)
+            btn_o.background_color = (0.1, 0.6, 0.35, 1) if m == "Online" else (0.7, 0.7, 0.7, 1)
+        btn_c.bind(on_press=lambda x: set_m("Cash"))
+        btn_o.bind(on_press=lambda x: set_m("Online"))
+        mode_box.add_widget(btn_c)
+        mode_box.add_widget(btn_o)
 
-            row_box.add_widget(name_btn)
-            row_box.add_widget(due_btn)
-            self.list_layout.add_widget(row_box)
+        content.add_widget(code_input)
+        content.add_widget(amt_input)
+        content.add_widget(mode_box)
 
-    def farmer_form(self, fid=None, name="", code="", phone="", mtype="Cow", rate=0.0):
-        box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(6))
-        code_in = make_input("Farmer Code (e.g. 01)", code)
-        name_in = make_input("Full Name *", name)
-        phone_in = make_input("Phone", phone)
-        rate_in = make_input("Fixed Rate (Optional)", rate if rate else "", numeric=True)
-        box.add_widget(code_in)
-        box.add_widget(name_in)
-        box.add_widget(phone_in)
-        box.add_widget(rate_in)
+        pop = Popup(title="Settle Farmer Khata", content=content, size_hint=(0.85, 0.5))
+        btn_confirm = Button(text="Confirm Payment & SMS", background_color=(0.1, 0.6, 0.35, 1), color=(1, 1, 1, 1), size_hint_y=0.22)
 
-        type_box = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(6))
-        btn_cow = make_btn("🐄 Cow", 36, 13, COLOR_BUY_ENTRY if mtype == "Cow" else COLOR_INACTIVE)
-        btn_buff = make_btn("🐃 Buffalo", 36, 13, COLOR_CUSTOMER if mtype == "Buffalo" else COLOR_INACTIVE)
-        selected_type = {"value": mtype or "Cow"}
-
-        def pick_cow(_):
-            selected_type["value"] = "Cow"
-            btn_cow.background_color = COLOR_BUY_ENTRY
-            btn_buff.background_color = COLOR_INACTIVE
-
-        def pick_buff(_):
-            selected_type["value"] = "Buffalo"
-            btn_buff.background_color = COLOR_CUSTOMER
-            btn_cow.background_color = COLOR_INACTIVE
-
-        btn_cow.bind(on_press=pick_cow)
-        btn_buff.bind(on_press=pick_buff)
-        type_box.add_widget(btn_cow)
-        type_box.add_widget(btn_buff)
-        box.add_widget(type_box)
-
-        btns = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
-        btn_c = make_btn("CANCEL", 42, 13, (0.5, 0.5, 0.5, 1))
-        btn_s = make_btn("SAVE", 42, 13, COLOR_BUY_ENTRY)
-        btns.add_widget(btn_c)
-        btns.add_widget(btn_s)
-        box.add_widget(btns)
-
-        pop = Popup(title="Farmer Profile", content=box, size_hint=(0.9, 0.72))
-        btn_c.bind(on_press=pop.dismiss)
-
-        def save(_):
-            nm = name_in.text.strip()
-            if not nm:
-                show_popup("Error", "Name is required.")
-                return
-            ok = db.save_farmer(fid, code_in.text.strip(), nm, phone_in.text.strip(), selected_type["value"], parse_num(rate_in.text))
-            if not ok:
-                show_popup("Error", "Could not save farmer.")
-                return
-            pop.dismiss()
-            self.load()
-
-        btn_s.bind(on_press=save)
-        pop.open()
-
-    def pay_popup(self, fid, name, due):
-        box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(6))
-        box.add_widget(Label(text=f"Pay {name}\nDue Balance: ₹{due:.2f}", font_size=dp(14), bold=True))
-        amt_in = make_input("Amount *", value=due if due > 0 else "", numeric=True)
-        note_in = make_input("Note (Optional)")
-        box.add_widget(amt_in)
-        box.add_widget(note_in)
-
-        btns = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
-        btn_c = make_btn("CANCEL", 42, 13, (0.5, 0.5, 0.5, 1))
-        btn_s = make_btn("SAVE PAYMENT", 42, 13, COLOR_BUY_ENTRY)
-        btns.add_widget(btn_c)
-        btns.add_widget(btn_s)
-        box.add_widget(btns)
-
-        pop = Popup(title="Farmer Payment", content=box, size_hint=(0.85, 0.45))
-        btn_c.bind(on_press=pop.dismiss)
-
-        def save_p(_):
-            amt = parse_num(amt_in.text)
-            if amt <= 0:
-                show_popup("Error", "Valid amount daalein.")
-                return
-            ok = db.save_farmer_payment(fid, amt, note_in.text.strip())
-            if not ok:
-                show_popup("Error", "Payment save nahi hua.")
-                return
-            pop.dismiss()
-            self.load()
-
-        btn_s.bind(on_press=save_p)
-        pop.open()
-
-
-# ============================================================
-# 5. CUSTOMER SALES & KHATA SCREENS
-# ============================================================
-class DailyEntryScreen(Screen):
-    """Customer Milk Sale Entry"""
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.session = "Morning" if datetime.now().hour < 12 else "Evening"
-        layout = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(8))
-        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
-        back = make_btn("< Back", 42, 13, COLOR_KHATA)
-        back.size_hint_x = None
-        back.width = dp(70)
-        back.bind(on_press=lambda _: setattr(self.manager, "current", "home"))
-        top.add_widget(back)
-        top.add_widget(Label(text="📤 Customer Milk Sale", font_size=dp(16), bold=True, color=(0.1, 0.3, 0.1, 1)))
-        layout.add_widget(top)
-
-        self.search_in = TextInput(hint_text="🔍 Search Customer...", multiline=False, font_size=dp(15), size_hint_y=None, height=dp(44))
-        self.search_in.bind(text=lambda *_: self.load())
-        layout.add_widget(self.search_in)
-
-        scroll = ScrollView()
-        self.list_layout = GridLayout(cols=1, spacing=dp(5), size_hint_y=None)
-        self.list_layout.bind(minimum_height=self.list_layout.setter("height"))
-        scroll.add_widget(self.list_layout)
-        layout.add_widget(scroll)
-        self.add_widget(layout)
-
-    def on_pre_enter(self):
-        self.load()
-
-    def load(self):
-        self.list_layout.clear_widgets()
-        search = self.search_in.text.strip().lower()
-        rows = db.get_customer_sales_status(self.session)
-
-        for cid, cd_str, name, def_rate, entry in rows:
-            if search and search not in name.lower() and search not in cd_str.lower():
-                continue
-            if entry:
-                l, r, amt = entry
-                txt = f"  [{cd_str}] {name} (Rate: Rs.{r:.2f})\n  ✓ Done: {l:.2f}L | ₹{amt:.2f}"
-                bg = (0.85, 0.95, 0.85, 1)
-            else:
-                txt = f"  [{cd_str}] {name} (Rate: Rs.{def_rate or 'N/A'})\n  [ Tap to enter sale... ]"
-                bg = (1, 1, 1, 1)
-
-            btn = Button(text=txt, font_size=dp(13), size_hint_y=None, height=dp(64), background_normal='', background_color=bg, color=(0.1, 0.2, 0.1, 1), halign='left', valign='middle')
-            btn.bind(size=btn.setter('text_size'))
-            btn.bind(on_press=lambda _, c=cid, n=name, cd=cd_str, dr=def_rate, e=entry: self.open_entry(c, n, cd, dr, e))
-            self.list_layout.add_widget(btn)
-
-    def open_entry(self, cid, name, cd_str, def_rate, existing):
-        box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(6))
-        box.add_widget(Label(text=f"[{cd_str}] {name}", font_size=dp(15), bold=True))
-        l_in = make_input("Litres *", str(existing[0]) if existing else "", numeric=True)
-        r_in = make_input("Rate *", str(existing[1]) if existing else (str(def_rate) if def_rate else ""), numeric=True)
-        amt_lbl = Label(text="Amount: Rs. 0.00", font_size=dp(13))
-        box.add_widget(l_in)
-        box.add_widget(r_in)
-        box.add_widget(amt_lbl)
-
-        def calc(*_):
-            l, r = parse_num(l_in.text), parse_num(r_in.text)
-            amt_lbl.text = f"Amount: Rs. {l * r:.2f}" if l and r else "Amount: Rs. 0.00"
-        l_in.bind(text=calc)
-        r_in.bind(text=calc)
-        calc()
-
-        btns = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
-        btn_c = make_btn("CANCEL", 42, 13, (0.5, 0.5, 0.5, 1))
-        btn_s = make_btn("SAVE", 42, 13, COLOR_CUSTOMER)
-        btns.add_widget(btn_c)
-        btns.add_widget(btn_s)
-        box.add_widget(btns)
-
-        pop = Popup(title="Customer Sale", content=box, size_hint=(0.85, 0.50))
-        btn_c.bind(on_press=pop.dismiss)
-
-        def save(_):
-            l, r = parse_num(l_in.text), parse_num(r_in.text)
-            if l > 0 and r > 0:
-                db.save_customer_sale(cid, self.session, l, r)
+        def do_pay(x):
+            try:
+                name, phone, amt = DairyService.settle_farmer_payment(code_input.text, amt_input.text, mode[0])
                 pop.dismiss()
-                self.load()
-        btn_s.bind(on_press=save)
+                self.refresh_list()
+                new_bal = db.get_farmer_khata_balance(code_input.text.strip())
+                msg = f"*{db.get_setting('dairy_name')}*\nPayment Paid: Rs.{amt:.2f} ({mode[0]})\nFarmer: {name}\nBalance Due: Rs.{new_bal:.2f}"
+                send_sms_native(phone, msg)
+                Popup(title="Settled", content=Label(text=f"Payment recorded! New Balance: Rs.{new_bal:.2f}"), size_hint=(0.8, 0.3)).open()
+            except ValidationError as ve:
+                Popup(title="Validation Error", content=Label(text=str(ve)), size_hint=(0.8, 0.3)).open()
+
+        btn_confirm.bind(on_press=do_pay)
+        content.add_widget(btn_confirm)
         pop.open()
 
 
+# 7. CUSTOMERS SCREEN (No Milk Type)
 class CustomersScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
-        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
-        back = make_btn("< Back", 42, 13, COLOR_KHATA)
-        back.size_hint_x = None
-        back.width = dp(70)
-        back.bind(on_press=lambda _: setattr(self.manager, "current", "home"))
-        top.add_widget(back)
-        top.add_widget(Label(text="👥 Customers (ग्राहक)", font_size=dp(16), bold=True, color=(0.1, 0.3, 0.1, 1)))
-        add_btn = make_btn("+ Add", 42, 13, COLOR_CUSTOMER)
-        add_btn.size_hint_x = None
-        add_btn.width = dp(75)
-        add_btn.bind(on_press=lambda _: self.customer_form())
-        top.add_widget(add_btn)
-        layout.add_widget(top)
+        layout = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        layout.add_widget(AppHeader(title="Retail Customers", back_callback=lambda x: setattr(self.manager, 'current', 'home')))
 
-        self.search_in = TextInput(hint_text="🔍 Search Customer...", multiline=False, font_size=dp(15), size_hint_y=None, height=dp(44))
-        self.search_in.bind(text=lambda *_: self.load())
-        layout.add_widget(self.search_in)
+        add_box = BoxLayout(size_hint_y=0.1, spacing=6)
+        self.code_in = TextInput(hint_text="Code *", multiline=False, size_hint_x=0.25)
+        self.name_in = TextInput(hint_text="Name *", multiline=False, size_hint_x=0.45)
+        self.phone_in = TextInput(hint_text="Phone", multiline=False, size_hint_x=0.3)
+        add_box.add_widget(self.code_in)
+        add_box.add_widget(self.name_in)
+        add_box.add_widget(self.phone_in)
+        layout.add_widget(add_box)
 
-        scroll = ScrollView()
-        self.list_layout = GridLayout(cols=1, spacing=dp(5), size_hint_y=None)
-        self.list_layout.bind(minimum_height=self.list_layout.setter("height"))
-        scroll.add_widget(self.list_layout)
-        layout.add_widget(scroll)
+        btn_add = Button(text="+ Add Customer", background_color=(0.15, 0.6, 0.6, 1), color=(1, 1, 1, 1), size_hint_y=0.08)
+        btn_add.bind(on_press=self.add_customer)
+        layout.add_widget(btn_add)
+
+        self.scroll = ScrollView(size_hint_y=0.82)
+        self.list_box = GridLayout(cols=1, spacing=6, size_hint_y=None)
+        self.list_box.bind(minimum_height=self.list_box.setter('height'))
+        self.scroll.add_widget(self.list_box)
+        layout.add_widget(self.scroll)
+
         self.add_widget(layout)
 
-    def on_pre_enter(self):
-        self.load()
+    def on_pre_enter(self, *args):
+        self.refresh_list()
 
-    def load(self):
-        self.list_layout.clear_widgets()
-        search = self.search_in.text.strip().lower()
-        rows = db.get_customers_with_balance()
-
-        for cid, cd_str, name, phone, rate, due in rows:
-            if search and search not in name.lower() and search not in cd_str.lower():
-                continue
-            row_box = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(4))
-            name_btn = Button(
-                text=f" [{cd_str}] {name}\n 📞 {phone or '-'} • Rate: Rs.{rate:.2f}", font_size=dp(13),
-                background_normal='', background_color=(0.95, 0.95, 0.95, 1), color=(0.1, 0.1, 0.1, 1),
-                halign='left', valign='middle'
-            )
-            name_btn.bind(size=name_btn.setter('text_size'))
-            name_btn.bind(on_press=lambda _, c=cid, n=name, cd=cd_str, p=phone, r=rate: self.customer_form(c, n, cd, p, r))
-
-            due_btn = Button(
-                text=f"₹ {due:.2f}\n{'Due' if due > 0 else 'Clear'}", font_size=dp(13), bold=True,
-                size_hint_x=None, width=dp(110), background_normal='',
-                background_color=(0.95, 0.85, 0.85, 1) if due > 0 else (0.85, 0.95, 0.85, 1),
-                color=(0.7, 0.1, 0.1, 1) if due > 0 else (0.1, 0.5, 0.1, 1)
-            )
-            due_btn.bind(on_press=lambda _, c=cid, n=name, d=due: self.pay_popup(c, n, d))
-
-            row_box.add_widget(name_btn)
-            row_box.add_widget(due_btn)
-            self.list_layout.add_widget(row_box)
-
-    def customer_form(self, cid=None, name="", code="", phone="", rate=0.0):
-        box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(6))
-        code_in = make_input("Code", code)
-        name_in = make_input("Name *", name)
-        phone_in = make_input("Phone", phone)
-        rate_in = make_input("Default Rate", rate if rate else "", numeric=True)
-        box.add_widget(code_in)
-        box.add_widget(name_in)
-        box.add_widget(phone_in)
-        box.add_widget(rate_in)
-
-        btns = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
-        btn_c = make_btn("CANCEL", 42, 13, (0.5, 0.5, 0.5, 1))
-        btn_s = make_btn("SAVE", 42, 13, COLOR_CUSTOMER)
-        btns.add_widget(btn_c)
-        btns.add_widget(btn_s)
-        box.add_widget(btns)
-
-        pop = Popup(title="Customer", content=box, size_hint=(0.9, 0.65))
-        btn_c.bind(on_press=pop.dismiss)
-
-        def save(_):
-            nm = name_in.text.strip()
-            if not nm:
-                show_popup("Error", "Name is required.")
-                return
-            ok = db.save_customer(cid, code_in.text.strip(), nm, phone_in.text.strip(), parse_num(rate_in.text))
-            if not ok:
-                show_popup("Error", "Could not save customer.")
-                return
-            pop.dismiss()
-            self.load()
-        btn_s.bind(on_press=save)
-        pop.open()
-
-    def pay_popup(self, cid, name, due):
-        box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(6))
-        box.add_widget(Label(text=f"Receive from {name}\nDue: ₹{due:.2f}", font_size=dp(14), bold=True))
-        amt_in = make_input("Amount *", value=due if due > 0 else "", numeric=True)
-        note_in = make_input("Note (Optional)")
-        box.add_widget(amt_in)
-        box.add_widget(note_in)
-
-        btns = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
-        btn_c = make_btn("CANCEL", 42, 13, (0.5, 0.5, 0.5, 1))
-        btn_s = make_btn("SAVE PAYMENT", 42, 13, COLOR_CUSTOMER)
-        btns.add_widget(btn_c)
-        btns.add_widget(btn_s)
-        box.add_widget(btns)
-
-        pop = Popup(title="Payment", content=box, size_hint=(0.85, 0.45))
-        btn_c.bind(on_press=pop.dismiss)
-
-        def save_r(_):
-            amt = parse_num(amt_in.text)
-            if amt <= 0:
-                show_popup("Error", "Valid amount daalein.")
-                return
-            ok = db.save_customer_payment(cid, amt, note_in.text.strip())
-            if not ok:
-                show_popup("Error", "Payment save nahi hua.")
-                return
-            pop.dismiss()
-            self.load()
-        btn_s.bind(on_press=save_r)
-        pop.open()
-
-
-# ============================================================
-# 6. SETTINGS SCREEN (Bluetooth, Dairy Info, Notify Toggles)
-# ============================================================
-class SettingsScreen(Screen):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
-
-        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
-        back = make_btn("< Back", 42, 13, COLOR_KHATA)
-        back.size_hint_x = None
-        back.width = dp(70)
-        back.bind(on_press=lambda _: setattr(self.manager, "current", "home"))
-        top.add_widget(back)
-        top.add_widget(Label(text="⚙️ App Settings & Hardware", font_size=dp(16), bold=True, color=(0.1, 0.3, 0.1, 1)))
-        self.layout.add_widget(top)
-
-        scroll = ScrollView()
-        body = BoxLayout(orientation="vertical", spacing=dp(8), size_hint_y=None, padding=[dp(4), dp(4)])
-        body.bind(minimum_height=body.setter("height"))
-
-        body.add_widget(Label(text="Dairy Profile (Receipt Header)", font_size=dp(13), bold=True, size_hint_y=None, height=dp(20)))
-        self.d_name = make_input("Dairy Name", db.get_setting("dairy_name", "Nilgiri Dairy"))
-        self.d_phone = make_input("Dairy Phone", db.get_setting("dairy_phone", ""))
-        body.add_widget(self.d_name)
-        body.add_widget(self.d_phone)
-
-        body.add_widget(Label(text="Bluetooth Thermal Printer MAC Address", font_size=dp(13), bold=True, size_hint_y=None, height=dp(20)))
-        self.prn_mac = make_input("Printer MAC (e.g. 00:11:22:33:44:55)", db.get_setting("printer_mac", ""))
-        body.add_widget(self.prn_mac)
-
-        body.add_widget(Label(text="Milk Analyzer / Lactoscan MAC Address", font_size=dp(13), bold=True, size_hint_y=None, height=dp(20)))
-        self.anz_mac = make_input("Analyzer MAC Address", db.get_setting("analyzer_mac", ""))
-        body.add_widget(self.anz_mac)
-
-        body.add_widget(Label(text="Auto Notify Farmer After Save", font_size=dp(13), bold=True, size_hint_y=None, height=dp(20)))
-        toggle_box = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        self.btn_sms = make_btn("📱 SMS: OFF", 42, 13, COLOR_INACTIVE)
-        self.btn_wa = make_btn("💬 WhatsApp: OFF", 42, 13, COLOR_INACTIVE)
-        self.btn_sms.bind(on_press=self.toggle_sms)
-        self.btn_wa.bind(on_press=self.toggle_wa)
-        toggle_box.add_widget(self.btn_sms)
-        toggle_box.add_widget(self.btn_wa)
-        body.add_widget(toggle_box)
-
-        note = Label(
-            text="Note: Direct SMS sending needs the SEND_SMS permission and\n"
-                 "may be restricted by Google Play for public apps.",
-            font_size=dp(11), color=(0.5, 0.5, 0.5, 1), size_hint_y=None, height=dp(34)
-        )
-        body.add_widget(note)
-
-        btn_save = make_btn("💾 SAVE SETTINGS", 48, 14, COLOR_BUY_ENTRY)
-        btn_save.bind(on_press=self.save_settings)
-        body.add_widget(btn_save)
-
-        scroll.add_widget(body)
-        self.layout.add_widget(scroll)
-        self.add_widget(self.layout)
-
-    def on_pre_enter(self):
-        self.d_name.text = db.get_setting("dairy_name", "Nilgiri Dairy")
-        self.d_phone.text = db.get_setting("dairy_phone", "")
-        self.prn_mac.text = db.get_setting("printer_mac", "")
-        self.anz_mac.text = db.get_setting("analyzer_mac", "")
-        self._refresh_toggles()
-
-    def _refresh_toggles(self):
-        sms_on = db.get_setting("auto_sms", "0") == "1"
-        wa_on = db.get_setting("auto_whatsapp", "0") == "1"
-        self.btn_sms.text = f"📱 SMS: {'ON' if sms_on else 'OFF'}"
-        self.btn_sms.background_color = COLOR_BUY_ENTRY if sms_on else COLOR_INACTIVE
-        self.btn_wa.text = f"💬 WhatsApp: {'ON' if wa_on else 'OFF'}"
-        self.btn_wa.background_color = COLOR_BUY_ENTRY if wa_on else COLOR_INACTIVE
-
-    def toggle_sms(self, _):
-        cur = db.get_setting("auto_sms", "0")
-        db.set_setting("auto_sms", "0" if cur == "1" else "1")
-        self._refresh_toggles()
-
-    def toggle_wa(self, _):
-        cur = db.get_setting("auto_whatsapp", "0")
-        db.set_setting("auto_whatsapp", "0" if cur == "1" else "1")
-        self._refresh_toggles()
-
-    def save_settings(self, _):
-        db.set_setting("dairy_name", self.d_name.text.strip())
-        db.set_setting("dairy_phone", self.d_phone.text.strip())
-        db.set_setting("printer_mac", self.prn_mac.text.strip())
-        db.set_setting("analyzer_mac", self.anz_mac.text.strip())
-        show_popup("Saved", "Settings updated successfully!")
-
-
-# ============================================================
-# 7. REPORTS SCREEN (Farmer Khata + Customer Khata, Excel/PDF)
-# ============================================================
-class ReportsScreen(Screen):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.mode = "farmer"
-        self.selected_id = None
-        self.selected_name = None
-        self.selected_code = None
-        self.year = date.today().year
-        self.month = date.today().month
-
-        self.layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
-
-        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
-        back = make_btn("< Back", 42, 13, COLOR_KHATA)
-        back.size_hint_x = None
-        back.width = dp(70)
-        back.bind(on_press=lambda _: self.go_back())
-        top.add_widget(back)
-        self.title_lbl = Label(text="Reports & Khata", font_size=dp(15), bold=True, color=(0.1, 0.3, 0.1, 1))
-        top.add_widget(self.title_lbl)
-        self.layout.add_widget(top)
-
-        self.mode_box = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(6))
-        self.btn_farmer_mode = make_btn("🚜 Farmers Khata", 38, 13, COLOR_CUSTOMER)
-        self.btn_customer_mode = make_btn("👥 Customers Khata", 38, 13, COLOR_INACTIVE)
-        self.btn_farmer_mode.bind(on_press=lambda _: self.set_mode("farmer"))
-        self.btn_customer_mode.bind(on_press=lambda _: self.set_mode("customer"))
-        self.mode_box.add_widget(self.btn_farmer_mode)
-        self.mode_box.add_widget(self.btn_customer_mode)
-        self.layout.add_widget(self.mode_box)
-
-        self.search_in = TextInput(hint_text="🔍 Search...", multiline=False, font_size=dp(15), size_hint_y=None, height=dp(44))
-        self.search_in.bind(text=lambda *_: self.load_list())
-        self.layout.add_widget(self.search_in)
-
-        scroll = ScrollView()
-        self.list_layout = GridLayout(cols=1, spacing=dp(5), size_hint_y=None)
-        self.list_layout.bind(minimum_height=self.list_layout.setter("height"))
-        scroll.add_widget(self.list_layout)
-        self.layout.add_widget(scroll)
-
-        self.add_widget(self.layout)
-
-    def set_mode(self, mode):
-        self.mode = mode
-        self.selected_id = None
-        self.btn_farmer_mode.background_color = COLOR_CUSTOMER if mode == "farmer" else COLOR_INACTIVE
-        self.btn_customer_mode.background_color = COLOR_CUSTOMER if mode == "customer" else COLOR_INACTIVE
-        self.search_in.text = ""
-        self.title_lbl.text = "Reports & Khata"
-        self.load_list()
-
-    def go_back(self):
-        if self.selected_id:
-            self.selected_id = None
-            self.title_lbl.text = "Reports & Khata"
-            self.mode_box.disabled = False
-            self.search_in.disabled = False
-            self.load_list()
-        else:
-            self.manager.current = "home"
-
-    def on_pre_enter(self):
-        self.selected_id = None
-        self.title_lbl.text = "Reports & Khata"
-        self.mode_box.disabled = False
-        self.search_in.disabled = False
-        self.search_in.text = ""
-        self.load_list()
-
-    def load_list(self):
-        self.list_layout.clear_widgets()
-        search = self.search_in.text.strip().lower()
-
-        if self.mode == "farmer":
-            rows = db.get_farmers_with_balance()
-        else:
-            rows = db.get_customers_with_balance()
-
-        if not rows:
-            self.list_layout.add_widget(Label(text="No records yet.", font_size=dp(13), size_hint_y=None, height=dp(50)))
+    def add_customer(self, *args):
+        code = self.code_in.text.strip()
+        name = self.name_in.text.strip()
+        phone = self.phone_in.text.strip()
+        if not code or not name:
             return
-
-        any_shown = False
-        for row in rows:
-            if self.mode == "farmer":
-                pid, cd_str, name, phone, mtype, rate, due = row
-            else:
-                pid, cd_str, name, phone, rate, due = row
-
-            if search and search not in name.lower() and search not in cd_str.lower():
-                continue
-
-            any_shown = True
-            btn = Button(
-                text=f"  [{cd_str}]  {name}\n  Total Due: Rs.{due:.2f}",
-                font_size=dp(13), size_hint_y=None, height=dp(58),
-                background_normal='', color=(0.1, 0.1, 0.1, 1),
-                background_color=(1.0, 0.9, 0.85, 1) if due > 0 else (0.9, 0.95, 0.9, 1),
-                halign='left', valign='middle'
-            )
-            btn.bind(size=btn.setter('text_size'))
-            btn.bind(on_press=lambda _, p=pid, n=name, cd=cd_str: self.open_report(p, n, cd))
-            self.list_layout.add_widget(btn)
-
-        if not any_shown:
-            self.list_layout.add_widget(Label(text="No matches found.", font_size=dp(13), size_hint_y=None, height=dp(50)))
-
-    def open_report(self, pid, name, code):
-        self.selected_id = pid
-        self.selected_name = name
-        self.selected_code = code
-        self.title_lbl.text = name
-        self.mode_box.disabled = True
-        self.search_in.disabled = True
-        self.year, self.month = date.today().year, date.today().month
-        self.render_month_report()
-
-    def render_month_report(self):
-        self.list_layout.clear_widgets()
-
-        nav = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
-        btn_prev = make_btn("< Prev", 40, 13, (0.3, 0.4, 0.5, 1))
-        month_lbl = Label(text=date(self.year, self.month, 1).strftime("%B %Y"), font_size=dp(14), bold=True)
-        btn_next = make_btn("Next >", 40, 13, (0.3, 0.4, 0.5, 1))
-        nav.add_widget(btn_prev)
-        nav.add_widget(month_lbl)
-        nav.add_widget(btn_next)
-        self.list_layout.add_widget(nav)
-
-        def go_prev(_):
-            y, m = self.year, self.month
-            self.year, self.month = (y - 1, 12) if m == 1 else (y, m - 1)
-            self.render_month_report()
-
-        def go_next(_):
-            y, m = self.year, self.month
-            self.year, self.month = (y + 1, 1) if m == 12 else (y, m + 1)
-            self.render_month_report()
-
-        btn_prev.bind(on_press=go_prev)
-        btn_next.bind(on_press=go_next)
-
-        if self.mode == "farmer":
-            data = db.get_farmer_month_data(self.selected_id, self.year, self.month)
-        else:
-            data = db.get_customer_month_data(self.selected_id, self.year, self.month)
-
-        stats = (
-            f"Previous Due: Rs.{data['previous_due']:.2f}\n"
-            f"This Month: {data['current_litres']:.2f} L = Rs.{data['current_amount']:.2f}\n"
-            f"This Month Paid: Rs.{data['current_paid']:.2f}\n"
-            f"TOTAL DUE: Rs.{data['total_due']:.2f}"
-        )
-        stats_lbl = Label(text=stats, font_size=dp(14), size_hint_y=None, height=dp(100), halign='left', valign='top')
-        stats_lbl.bind(size=lambda w, s: setattr(w, 'text_size', (w.width, None)))
-        self.list_layout.add_widget(stats_lbl)
-
-        btn_payment_text = "+ Add Payment" if self.mode == "customer" else "+ Pay Farmer"
-        btn_payment = make_btn(btn_payment_text, 44, 13, COLOR_BUY_ENTRY)
-        btn_payment.bind(on_press=lambda _: self.add_payment_popup())
-        self.list_layout.add_widget(btn_payment)
-
-        export_box = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        btn_excel = make_btn("📊 Export Excel", 44, 12, (0.2, 0.5, 0.3, 1))
-        btn_pdf = make_btn("📄 Export PDF", 44, 12, (0.6, 0.25, 0.2, 1))
-        btn_excel.bind(on_press=lambda _: self.do_export("excel"))
-        btn_pdf.bind(on_press=lambda _: self.do_export("pdf"))
-        export_box.add_widget(btn_excel)
-        export_box.add_widget(btn_pdf)
-        self.list_layout.add_widget(export_box)
-
-    def add_payment_popup(self):
-        box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(6))
-        box.add_widget(Label(text=f"Payment - {self.selected_name}", font_size=dp(15), bold=True))
-        amt_in = make_input("Amount *", numeric=True)
-        note_in = make_input("Note (optional)")
-        box.add_widget(amt_in)
-        box.add_widget(note_in)
-
-        btns = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
-        btn_c = make_btn("CANCEL", 42, 13, (0.5, 0.5, 0.5, 1))
-        btn_s = make_btn("SAVE", 42, 13, COLOR_BUY_ENTRY)
-        btns.add_widget(btn_c)
-        btns.add_widget(btn_s)
-        box.add_widget(btns)
-
-        pop = Popup(title="Payment", content=box, size_hint=(0.85, 0.45))
-        btn_c.bind(on_press=pop.dismiss)
-
-        def save(_):
-            amt = parse_num(amt_in.text)
-            if amt <= 0:
-                show_popup("Error", "Valid amount daalein.")
-                return
-            if self.mode == "farmer":
-                ok = db.save_farmer_payment(self.selected_id, amt, note_in.text.strip())
-            else:
-                ok = db.save_customer_payment(self.selected_id, amt, note_in.text.strip())
-            if not ok:
-                show_popup("Error", "Payment save nahi hua.")
-                return
-            pop.dismiss()
-            self.render_month_report()
-
-        btn_s.bind(on_press=save)
-        pop.open()
-
-    def do_export(self, fmt):
+        conn = db.get_db()
         try:
-            import export_engine
-        except Exception as e:
-            show_popup("Error", f"Export module not available: {e}")
+            with conn:
+                conn.execute("INSERT INTO customers (code, name, phone) VALUES (?, ?, ?)", (code, name, phone))
+            self.code_in.text = ""
+            self.name_in.text = ""
+            self.phone_in.text = ""
+            self.refresh_list()
+        except sqlite3.IntegrityError:
+            Popup(title="Error", content=Label(text="Customer Code exists!"), size_hint=(0.8, 0.3)).open()
+        finally:
+            conn.close()
+
+    def refresh_list(self):
+        self.list_box.clear_widgets()
+        conn = db.get_db()
+        rows = conn.execute("SELECT * FROM customers ORDER BY CAST(code AS INTEGER) ASC").fetchall()
+        conn.close()
+        for c in rows:
+            self.list_box.add_widget(Label(text=f"[{c['code']}] {c['name']} | Phone: {c['phone']}", size_hint_y=None, height=35, color=(0.15, 0.15, 0.15, 1)))
+
+
+# 8. DAILY ENTRY (Retail Sales with Cow/Buffalo Toggle)
+class DailyEntryScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        layout = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        layout.add_widget(AppHeader(title="Sell Milk (Grahak Bikri)", back_callback=lambda x: setattr(self.manager, 'current', 'home')))
+
+        self.code_in = TextInput(hint_text="Customer Code", multiline=False, size_hint_y=0.1)
+        layout.add_widget(self.code_in)
+
+        m_box = BoxLayout(size_hint_y=0.1, spacing=8)
+        self.sale_mtype = "Cow"
+        self.btn_c = Button(text="Cow", background_color=(0.1, 0.6, 0.35, 1), color=(1, 1, 1, 1))
+        self.btn_b = Button(text="Buffalo", background_color=(0.7, 0.7, 0.7, 1), color=(1, 1, 1, 1))
+        def set_t(t):
+            self.sale_mtype = t
+            self.btn_c.background_color = (0.1, 0.6, 0.35, 1) if t == "Cow" else (0.7, 0.7, 0.7, 1)
+            self.btn_b.background_color = (0.1, 0.6, 0.35, 1) if t == "Buffalo" else (0.7, 0.7, 0.7, 1)
+        self.btn_c.bind(on_press=lambda x: set_t("Cow"))
+        self.btn_b.bind(on_press=lambda x: set_t("Buffalo"))
+        m_box.add_widget(self.btn_c)
+        m_box.add_widget(self.btn_b)
+        layout.add_widget(m_box)
+
+        self.litres_in = TextInput(hint_text="Litres Sold *", multiline=False, size_hint_y=0.1)
+        self.rate_in = TextInput(hint_text="Rate / L (Rs) *", multiline=False, size_hint_y=0.1)
+        layout.add_widget(self.litres_in)
+        layout.add_widget(self.rate_in)
+
+        btn_save = Button(text="RECORD SALE", bold=True, background_color=(0.15, 0.6, 0.6, 1), color=(1, 1, 1, 1), size_hint_y=0.12)
+        btn_save.bind(on_press=self.save_sale)
+        layout.add_widget(btn_save)
+
+        layout.add_widget(Label(size_hint_y=0.48))
+        self.add_widget(layout)
+
+    def save_sale(self, *args):
+        code = self.code_in.text.strip()
+        try:
+            litres = float(self.litres_in.text)
+            rate = float(self.rate_in.text)
+            total = round(litres * rate, 2)
+        except ValueError:
+            Popup(title="Error", content=Label(text="Enter valid numeric values!"), size_hint=(0.8, 0.3)).open()
             return
-
-        if self.mode == "farmer":
-            data = db.get_farmer_month_data(self.selected_id, self.year, self.month)
-            rows = db.get_farmer_month_entries(self.selected_id, self.year, self.month)
-            title = "Farmer Milk Purchase Statement"
-            entity_label = "Farmer"
-        else:
-            data = db.get_customer_month_data(self.selected_id, self.year, self.month)
-            rows = db.get_customer_month_entries(self.selected_id, self.year, self.month)
-            title = "Customer Milk Sale Statement"
-            entity_label = "Customer"
-
-        month_label = date(self.year, self.month, 1).strftime("%B %Y")
-        safe_name = "".join(c for c in self.selected_name if c.isalnum() or c in " _-").strip().replace(" ", "_")
-        filename_base = f"{self.mode}_{safe_name}_{self.year}_{self.month:02d}"
-
-        out_dir = db.get_export_dir()
-        ext = "xlsx" if fmt == "excel" else "pdf"
-        output_path = os.path.join(out_dir, f"{filename_base}.{ext}")
-
-        if fmt == "excel":
-            ok, result = export_engine.export_month_excel(output_path, title, self.selected_code, self.selected_name, month_label, data, entity_label, rows)
-        else:
-            ok, result = export_engine.export_month_pdf(output_path, title, self.selected_code, self.selected_name, month_label, data, entity_label, rows)
-
-        if ok:
-            show_popup("Exported", f"Saved to app storage:\n{result}")
-        else:
-            show_popup("Export Failed", result)
+        conn = db.get_db()
+        with conn:
+            conn.execute('''
+                INSERT INTO retail_sales (date, shift, customer_code, milk_type, litres, rate, total_amount)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (datetime.date.today().isoformat(), "Morning", code, self.sale_mtype, litres, rate, total))
+        conn.close()
+        Popup(title="Success", content=Label(text=f"Sale Recorded: Rs.{total}"), size_hint=(0.8, 0.3)).open()
 
 
-# ============================================================
-# 8. AI SCANNER SCREEN
-# ============================================================
+# 9. AI SCANNER SCREEN (Threaded Non-blocking OCR)
 class ScanRegisterScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.img = None
-        layout = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
-        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(4))
-        back = make_btn("< Back", 42, 13, COLOR_KHATA)
-        back.size_hint_x = None
-        back.width = dp(70)
-        back.bind(on_press=lambda _: setattr(self.manager, "current", "home"))
-        top.add_widget(back)
-        top.add_widget(Label(text="📷 AI Scanner (Register Scan)", font_size=dp(16), bold=True, color=(0.1, 0.3, 0.1, 1)))
-        layout.add_widget(top)
+        layout = BoxLayout(orientation="vertical", spacing=10, padding=10)
+        layout.add_widget(AppHeader(title="AI Register Scanner", back_callback=lambda x: setattr(self.manager, 'current', 'home')))
 
-        if not AI_SCANNER_AVAILABLE:
-            layout.add_widget(Label(text="AI Scanner module not installed in this build.", font_size=dp(13)))
-        else:
-            self.lbl = Label(text="No photo selected.", font_size=dp(13), size_hint_y=None, height=dp(50))
-            layout.add_widget(self.lbl)
-            b1 = make_btn("Choose Register Photo", 46, 14, COLOR_CUSTOMER)
-            b2 = make_btn("Scan & Extract", 46, 14, COLOR_SCANNER)
-            b1.bind(on_press=self.pick)
-            b2.bind(on_press=self.scan)
-            layout.add_widget(b1)
-            layout.add_widget(b2)
+        self.status_lbl = Label(text="Select image from device storage to scan", color=(0.2, 0.2, 0.2, 1), size_hint_y=0.15)
+        layout.add_widget(self.status_lbl)
+
+        btn_pick = Button(text="📁 Choose Image Path", background_color=(0.2, 0.5, 0.7, 1), color=(1, 1, 1, 1), size_hint_y=0.12)
+        btn_pick.bind(on_press=self.pick_sample)
+        layout.add_widget(btn_pick)
+
+        self.btn_run = Button(text="⚡ Process & Import to Database", background_color=(0.9, 0.5, 0.1, 1), color=(1, 1, 1, 1), size_hint_y=0.12)
+        self.btn_run.bind(on_press=self.start_ocr_thread)
+        layout.add_widget(self.btn_run)
+
+        self.scroll = ScrollView(size_hint_y=0.61)
+        self.result_box = GridLayout(cols=1, spacing=5, size_hint_y=None)
+        self.result_box.bind(minimum_height=self.result_box.setter('height'))
+        self.scroll.add_widget(self.result_box)
+        layout.add_widget(self.scroll)
+
+        self.selected_path = "register_sample.jpg"
         self.add_widget(layout)
 
-    def pick(self, _):
-        if PLYER_FILECHOOSER:
-            try:
-                filechooser.open_file(on_selection=self.on_pick, filters=[["Images", "*.jpg", "*.png"]])
-            except Exception as e:
-                show_popup("Error", str(e))
-        else:
-            show_popup("Error", "File picker not available.")
+    def pick_sample(self, *args):
+        self.status_lbl.text = f"Selected: {self.selected_path}"
 
-    def on_pick(self, s):
-        if s:
-            self.img = s[0]
-            self.lbl.text = f"Selected: {os.path.basename(self.img)}"
+    def start_ocr_thread(self, *args):
+        self.status_lbl.text = "Processing image in background..."
+        threading.Thread(target=self._ocr_worker, daemon=True).start()
 
-    def scan(self, _):
-        if not self.img:
-            show_popup("Error", "Pehle ek photo select karein.")
+    def _ocr_worker(self):
+        success, res = scanner.process_dairy_register_image(self.selected_path)
+        if not success:
+            self.status_lbl.text = f"Scan Note: {res}"
             return
-        self.lbl.text = "Scanning..."
 
-        def run():
-            try:
-                res = scan_dairy_register(self.img)
-                msg = f"Done: {res}"
-            except Exception as e:
-                msg = f"Failed: {e}"
-            Clock.schedule_once(lambda dt: setattr(self.lbl, 'text', msg))
-        threading.Thread(target=run, daemon=True).start()
+        conn = db.get_db()
+        count = 0
+        date_today = datetime.date.today().isoformat()
+        with conn:
+            for item in res:
+                try:
+                    code = str(item.get("code", "01"))
+                    litres = float(item.get("litres", 0.0))
+                    fat = float(item.get("fat", 4.0))
+                    snf = float(item.get("snf", 8.5))
+                    mtype = item.get("milk_type", "Cow")
+                    rate = 40.0
+                    conn.execute('''
+                        INSERT INTO milk_purchases (date, shift, farmer_code, milk_type, litres, fat, snf, rate, total_amount)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (date_today, "Morning", code, mtype, litres, fat, snf, rate, round(litres * rate, 2)))
+                    count += 1
+                except:
+                    pass
+        conn.close()
+        self.status_lbl.text = f"Imported {count} entries successfully!"
+
+
+# 10. SETTINGS SCREEN
+class SettingsScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        layout = BoxLayout(orientation="vertical", spacing=10, padding=12)
+        layout.add_widget(AppHeader(title="Settings & Hardware", back_callback=lambda x: setattr(self.manager, 'current', 'home')))
+
+        layout.add_widget(Label(text="Dairy Profile Name (Header & Receipts)", bold=True, color=(0.2, 0.2, 0.2, 1), size_hint_y=0.06))
+        self.dname_in = TextInput(hint_text="Dairy Name", multiline=False, size_hint_y=0.09)
+        self.dphone_in = TextInput(hint_text="Dairy Phone Number", multiline=False, size_hint_y=0.09)
+        layout.add_widget(self.dname_in)
+        layout.add_widget(self.dphone_in)
+
+        layout.add_widget(Label(text="Bluetooth Thermal Printer MAC", bold=True, color=(0.2, 0.2, 0.2, 1), size_hint_y=0.06))
+        self.mac_in = TextInput(hint_text="e.g. 00:11:22:33:44:55", multiline=False, size_hint_y=0.09)
+        layout.add_widget(self.mac_in)
+
+        btn_save = Button(text="SAVE SETTINGS", bold=True, background_color=(0.1, 0.6, 0.35, 1), color=(1, 1, 1, 1), size_hint_y=0.12)
+        btn_save.bind(on_press=self.save_settings)
+        layout.add_widget(btn_save)
+
+        btn_logout = Button(text="Logout from Device", background_color=(0.8, 0.2, 0.2, 1), color=(1, 1, 1, 1), size_hint_y=0.1)
+        btn_logout.bind(on_press=self.logout)
+        layout.add_widget(btn_logout)
+
+        layout.add_widget(Label(size_hint_y=0.39))
+        self.add_widget(layout)
+
+    def on_pre_enter(self, *args):
+        self.dname_in.text = db.get_setting("dairy_name")
+        self.dphone_in.text = db.get_setting("dairy_phone")
+        self.mac_in.text = db.get_setting("printer_mac")
+
+    def save_settings(self, *args):
+        db.save_setting("dairy_name", self.dname_in.text.strip())
+        db.save_setting("dairy_phone", self.dphone_in.text.strip())
+        db.save_setting("printer_mac", self.mac_in.text.strip())
+        Popup(title="Success", content=Label(text="Settings Updated!"), size_hint=(0.7, 0.25)).open()
+
+    def logout(self, *args):
+        AuthManager.logout()
+        self.manager.current = "login"
+
+
+# 11. REPORTS & EXPORTS SCREEN (Phase 3 Complete)
+class ReportsScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        layout = BoxLayout(orientation="vertical", spacing=10, padding=12)
+        layout.add_widget(AppHeader(title="Reports & Statements", back_callback=lambda x: setattr(self.manager, 'current', 'home')))
+
+        self.fcode_in = TextInput(hint_text="Farmer Code for Statement (e.g. 01)", multiline=False, size_hint_y=0.1)
+        layout.add_widget(self.fcode_in)
+
+        btn_pdf = Button(text="📄 Export Farmer Statement (PDF)", background_color=(0.2, 0.5, 0.7, 1), color=(1, 1, 1, 1), size_hint_y=0.12)
+        btn_pdf.bind(on_press=self.export_pdf)
+        layout.add_widget(btn_pdf)
+
+        btn_excel = Button(text="📊 Export Full Dairy Ledger (Excel)", background_color=(0.1, 0.6, 0.35, 1), color=(1, 1, 1, 1), size_hint_y=0.12)
+        btn_excel.bind(on_press=self.export_excel)
+        layout.add_widget(btn_excel)
+
+        self.status_lbl = Label(text="Export files to device storage", color=(0.3, 0.3, 0.3, 1), size_hint_y=0.66)
+        layout.add_widget(self.status_lbl)
+        self.add_widget(layout)
+
+    def export_pdf(self, *args):
+        code = self.fcode_in.text.strip()
+        if not code:
+            Popup(title="Error", content=Label(text="Enter Farmer Code"), size_hint=(0.7, 0.25)).open()
+            return
+        today = datetime.date.today()
+        start = today.replace(day=1).isoformat()
+        end = today.isoformat()
+        out_name = f"Farmer_{code}_Statement.pdf"
+        ok, path = ExportEngine.generate_farmer_monthly_pdf(code, start, end, out_name)
+        if ok:
+            self.status_lbl.text = f"PDF Saved: {os.path.abspath(path)}"
+            Popup(title="Exported", content=Label(text=f"Saved to: {path}"), size_hint=(0.8, 0.3)).open()
+        else:
+            Popup(title="Failed", content=Label(text=path), size_hint=(0.8, 0.3)).open()
+
+    def export_excel(self, *args):
+        ok, path = ExportEngine.generate_excel_report("Dairy_Master_Report.xlsx")
+        if ok:
+            self.status_lbl.text = f"Excel Saved: {os.path.abspath(path)}"
+            Popup(title="Exported", content=Label(text=f"Saved to: {path}"), size_hint=(0.8, 0.3)).open()
