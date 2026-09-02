@@ -1,14 +1,19 @@
-# main.py - App Launcher, Android Runtime Permissions & Screen Registry
+# main.py - App Launcher, Softinput Pan, Auth Router & Permissions
 import os
 from kivy.app import App
+from kivy.core.window import Window
 from kivy.utils import platform
 from kivy.uix.screenmanager import ScreenManager
 
+# Android Keyboard Soft-Input Auto Pan Fix (Keyboard ke peeche slot nahi chupega)
+Window.softinput_mode = "below_target"
+Window.clearcolor = (0.96, 0.97, 0.98, 1)
+
 import database as db
 from interface import (
-    HomeScreen, BuyMilkScreen, CollectionListScreen,
-    FarmersScreen, DailyEntryScreen, CustomersScreen,
-    SettingsScreen, ReportsScreen, ScanRegisterScreen
+    LoginScreen, SignUpScreen, HomeScreen, BuyMilkScreen,
+    CollectionListScreen, FarmersScreen, DailyEntryScreen,
+    CustomersScreen, SettingsScreen, ReportsScreen, ScanRegisterScreen
 )
 
 
@@ -16,7 +21,7 @@ class NilgiriDairyApp(App):
     def build(self):
         self.title = "Nilgiri Dairy Collection"
 
-        # Android Runtime Permissions (Bluetooth, SMS, Camera, Storage)
+        # Android Runtime Permissions
         if platform == "android":
             self.request_android_permissions()
 
@@ -25,6 +30,8 @@ class NilgiriDairyApp(App):
 
         # Screen Manager & Registry
         sm = ScreenManager()
+        sm.add_widget(LoginScreen(name="login"))
+        sm.add_widget(SignUpScreen(name="signup"))
         sm.add_widget(HomeScreen(name="home"))
         sm.add_widget(BuyMilkScreen(name="buy_milk"))
         sm.add_widget(CollectionListScreen(name="collection_list"))
@@ -34,6 +41,15 @@ class NilgiriDairyApp(App):
         sm.add_widget(SettingsScreen(name="settings"))
         sm.add_widget(ReportsScreen(name="reports"))
         sm.add_widget(ScanRegisterScreen(name="scan_register"))
+
+        # Smart Session Routing (Pehle se login hai to seedha Home, nahi to Login)
+        try:
+            if db.is_user_logged_in():
+                sm.current = "home"
+            else:
+                sm.current = "login"
+        except Exception:
+            sm.current = "login"
 
         return sm
 
@@ -57,3 +73,4 @@ class NilgiriDairyApp(App):
 
 if __name__ == "__main__":
     NilgiriDairyApp().run()
+    
